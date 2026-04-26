@@ -2,7 +2,7 @@ services:
   - type: web
     name: vtc-manager
     env: node
-    buildCommand: npm install && cd client && npm install && npm run build
+    buildCommand: npm install && cd client && npm install --include=dev && npm run build
     startCommand: npm run server
     envVars:
       - key: NODE_ENV
