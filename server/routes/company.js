@@ -3,12 +3,18 @@ const router = express.Router();
 const { db } = require('../database');
 const multer = require('multer');
 const path = require('path');
+const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 
 // Configure multer for logo uploads
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    cb(null, path.join(__dirname, '../uploads/logos'));
+    const dir = path.join(__dirname, '../uploads/logos');
+    // FIX: créer le dossier s'il n'existe pas (après reset Render)
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    cb(null, dir);
   },
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname);
@@ -101,15 +107,13 @@ router.get('/dashboard', (req, res) => {
 
     const allCompanies = db.prepare('SELECT * FROM ai_companies').all();
 
-    // FIX: classement filtré par mode
-    // On compare uniquement avec les IA qui sont dans le même mode que le joueur
+    // Classement filtré par mode
     const realCompanies = allCompanies.filter(c => c.drive_mode === 'real');
     const raceCompanies = allCompanies.filter(c => c.drive_mode === 'race');
 
     const realRanking = realCompanies.filter(c => c.monthly_km_real > totalKmReal).length + 1;
     const raceRanking = raceCompanies.filter(c => c.monthly_km_race > totalKmRace).length + 1;
 
-    // Total participants par mode (IA + joueur si dans ce mode)
     const totalRealCompanies = realCompanies.length + (company.drive_mode === 'real' ? 1 : 0);
     const totalRaceCompanies = raceCompanies.length + (company.drive_mode === 'race' ? 1 : 0);
 
