@@ -10,7 +10,7 @@ const { v4: uuidv4 } = require('uuid');
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     const dir = path.join(__dirname, '../uploads/logos');
-    // FIX: créer le dossier s'il n'existe pas (après reset Render)
+    // Créer le dossier s'il n'existe pas (après reset Render)
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
@@ -22,10 +22,10 @@ const storage = multer.diskStorage({
   }
 });
 
-// Limite 2MB + images uniquement
+// Limite 5MB + images uniquement
 const upload = multer({
   storage,
-  limits: { fileSize: 2 * 1024 * 1024 },
+  limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const allowed = /jpeg|jpg|png|gif|webp|svg/;
     const ext = allowed.test(path.extname(file.originalname).toLowerCase());
@@ -72,22 +72,28 @@ router.put('/', (req, res) => {
 });
 
 // Upload logo
-router.post('/logo', upload.single('logo'), (req, res) => {
-  try {
+// FIX: multer appelé manuellement pour catcher les erreurs de taille correctement
+router.post('/logo', (req, res) => {
+  upload.single('logo')(req, res, (err) => {
+    if (err) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({ error: 'Fichier trop volumineux (max 5MB)' });
+      }
+      return res.status(400).json({ error: err.message });
+    }
+
     if (!req.file) {
       return res.status(400).json({ error: 'Aucun fichier uploade' });
     }
 
-    const logoPath = `/uploads/logos/${req.file.filename}`;
-    db.prepare('UPDATE company SET logo = ? WHERE id = 1').run(logoPath);
-
-    res.json({ logo: logoPath });
-  } catch (error) {
-    if (error.code === 'LIMIT_FILE_SIZE') {
-      return res.status(400).json({ error: 'Fichier trop volumineux (max 2MB)' });
+    try {
+      const logoPath = `/uploads/logos/${req.file.filename}`;
+      db.prepare('UPDATE company SET logo = ? WHERE id = 1').run(logoPath);
+      res.json({ logo: logoPath });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
     }
-    res.status(500).json({ error: error.message });
-  }
+  });
 });
 
 // Get dashboard stats
