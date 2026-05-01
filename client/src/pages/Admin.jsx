@@ -22,7 +22,9 @@ import {
   adminUpdateSettings,
   getCompany
 } from '../api'
-import { Settings, DollarSign, Clock, RotateCcw, Unlock, Zap, Building2, Trash2, Plus, Sliders } from 'lucide-react'
+import { Settings, DollarSign, Clock, RotateCcw, Unlock, Zap, Building2, Trash2, Plus, Sliders, Map } from 'lucide-react'
+
+const API = import.meta.env.VITE_API_URL || ''
 
 export default function Admin() {
   const [company, setCompany] = useState(null)
@@ -40,6 +42,13 @@ export default function Admin() {
   const [newTruckName, setNewTruckName] = useState('')
   const [newTruckPrice, setNewTruckPrice] = useState(50000)
   const [settings, setSettings] = useState({})
+
+  // ============ KM MANAGEMENT STATE ============
+  const [kmSnapshot, setKmSnapshot] = useState(null)
+  const [kmEdits, setKmEdits] = useState({}) // { id: { monthly_km_real, monthly_km_race, total_km_real, total_km_race } }
+  const [kmPlayerEdits, setKmPlayerEdits] = useState({})
+  const [kmLoading, setKmLoading] = useState(false)
+  const [kmSaving, setKmSaving] = useState(false)
 
   useEffect(() => {
     loadData()
@@ -65,6 +74,103 @@ export default function Admin() {
       setLoading(false)
     }
   }
+
+  // ============ KM MANAGEMENT FUNCTIONS ============
+
+  async function loadKmSnapshot() {
+    setKmLoading(true)
+    try {
+      const res = await fetch(`${API}/api/admin/km-snapshot`)
+      const data = await res.json()
+      setKmSnapshot(data)
+
+      // Initialiser les champs d'édition avec les valeurs actuelles
+      const edits = {}
+      for (const ai of data.ai_companies) {
+        edits[ai.id] = {
+          monthly_km_real: Math.round(ai.monthly_km_real || 0),
+          monthly_km_race: Math.round(ai.monthly_km_race || 0),
+          total_km_real:   Math.round(ai.total_km_real   || 0),
+          total_km_race:   Math.round(ai.total_km_race   || 0),
+        }
+      }
+      setKmEdits(edits)
+
+      setKmPlayerEdits({
+        monthly_km_real: Math.round(data.player?.monthly_km_real || 0),
+        monthly_km_race: Math.round(data.player?.monthly_km_race || 0),
+        total_km_real:   Math.round(data.player?.total_km_real   || 0),
+        total_km_race:   Math.round(data.player?.total_km_race   || 0),
+      })
+    } catch (error) {
+      alert('Erreur chargement snapshot: ' + error.message)
+    } finally {
+      setKmLoading(false)
+    }
+  }
+
+  function handleKmEdit(id, field, value) {
+    setKmEdits(prev => ({
+      ...prev,
+      [id]: { ...prev[id], [field]: parseInt(value) || 0 }
+    }))
+  }
+
+  function handleKmPlayerEdit(field, value) {
+    setKmPlayerEdits(prev => ({ ...prev, [field]: parseInt(value) || 0 }))
+  }
+
+  async function saveAllKm() {
+    if (!confirm('Sauvegarder tous les km modifiés ?')) return
+    setKmSaving(true)
+    try {
+      // Sauvegarder le joueur
+      await fetch(`${API}/api/admin/player/km`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(kmPlayerEdits)
+      })
+
+      // Sauvegarder toutes les IA
+      for (const [id, km] of Object.entries(kmEdits)) {
+        await fetch(`${API}/api/admin/ai-company/${id}/km`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(km)
+        })
+      }
+
+      alert('✅ Tous les km ont été sauvegardés !')
+      await loadKmSnapshot()
+      await loadData()
+    } catch (error) {
+      alert('Erreur sauvegarde: ' + error.message)
+    } finally {
+      setKmSaving(false)
+    }
+  }
+
+  async function downloadSnapshot() {
+    try {
+      const res = await fetch(`${API}/api/admin/km-snapshot`)
+      const data = await res.json()
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `km-snapshot-${new Date().toISOString().split('T')[0]}.json`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (error) {
+      alert('Erreur: ' + error.message)
+    }
+  }
+
+  async function downloadDB() {
+    window.open(`${API}/api/admin/backup-db`, '_blank')
+  }
+
+  // ============ EXISTING FUNCTIONS ============
 
   async function handleAddMoney() {
     try {
@@ -348,11 +454,163 @@ export default function Admin() {
           <button onClick={handleTestMonthChange} className="bg-yellow-600 hover:bg-yellow-700 px-4 py-2 rounded-lg flex items-center gap-2">
             🧪 Tester Fin de Mois
           </button>
+          <button onClick={downloadDB} className="bg-blue-700 hover:bg-blue-600 px-4 py-2 rounded-lg flex items-center gap-2">
+            💾 Télécharger la DB
+          </button>
           <button onClick={handleResetAll} className="bg-red-600 hover:bg-red-700 px-4 py-2 rounded-lg flex items-center gap-2">
             <Trash2 className="w-4 h-4" />
             RESET COMPLET
           </button>
         </div>
+      </div>
+
+      {/* ============ GESTION KM ============ */}
+      <div className="bg-dark-800 rounded-xl p-6 border border-orange-700">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold flex items-center gap-2">
+            <Map className="w-5 h-5 text-orange-400" />
+            Gestion des KM (restauration après reset)
+          </h2>
+          <div className="flex gap-3">
+            <button
+              onClick={downloadSnapshot}
+              className="bg-blue-700 hover:bg-blue-600 px-4 py-2 rounded-lg text-sm flex items-center gap-2"
+            >
+              📥 Sauvegarder snapshot
+            </button>
+            <button
+              onClick={loadKmSnapshot}
+              disabled={kmLoading}
+              className="bg-orange-600 hover:bg-orange-700 px-4 py-2 rounded-lg text-sm flex items-center gap-2"
+            >
+              {kmLoading ? '⏳ Chargement...' : '📊 Charger les km actuels'}
+            </button>
+          </div>
+        </div>
+
+        {!kmSnapshot ? (
+          <div className="text-center py-8 text-dark-400">
+            <p>Clique sur <strong>"Charger les km actuels"</strong> pour voir et modifier les km de chaque équipe.</p>
+            <p className="text-sm mt-2">Utile pour restaurer les km après un reset Render.</p>
+          </div>
+        ) : (
+          <div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-dark-700">
+                  <tr className="text-left text-dark-400">
+                    <th className="px-3 py-2">Équipe</th>
+                    <th className="px-3 py-2">Mode</th>
+                    <th className="px-3 py-2">Km mensuel Réel</th>
+                    <th className="px-3 py-2">Km mensuel Course</th>
+                    <th className="px-3 py-2">Km total Réel</th>
+                    <th className="px-3 py-2">Km total Course</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-dark-700">
+
+                  {/* Joueur */}
+                  <tr className="bg-primary-900/30 hover:bg-primary-900/50">
+                    <td className="px-3 py-2 font-bold text-primary-400">
+                      🎮 {company?.name || 'Ma VTC'} (Vous)
+                    </td>
+                    <td className="px-3 py-2">
+                      <span className={`text-xs px-2 py-1 rounded ${company?.drive_mode === 'race' ? 'bg-orange-700' : 'bg-blue-700'}`}>
+                        {company?.drive_mode === 'race' ? '🏎️ Course' : '🚗 Réel'}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2">
+                      <input
+                        type="number"
+                        value={kmPlayerEdits.monthly_km_real ?? 0}
+                        onChange={(e) => handleKmPlayerEdit('monthly_km_real', e.target.value)}
+                        className="w-28 bg-dark-600 border border-dark-500 rounded px-2 py-1 text-center"
+                      />
+                    </td>
+                    <td className="px-3 py-2">
+                      <input
+                        type="number"
+                        value={kmPlayerEdits.monthly_km_race ?? 0}
+                        onChange={(e) => handleKmPlayerEdit('monthly_km_race', e.target.value)}
+                        className="w-28 bg-dark-600 border border-dark-500 rounded px-2 py-1 text-center"
+                      />
+                    </td>
+                    <td className="px-3 py-2">
+                      <input
+                        type="number"
+                        value={kmPlayerEdits.total_km_real ?? 0}
+                        onChange={(e) => handleKmPlayerEdit('total_km_real', e.target.value)}
+                        className="w-28 bg-dark-600 border border-dark-500 rounded px-2 py-1 text-center"
+                      />
+                    </td>
+                    <td className="px-3 py-2">
+                      <input
+                        type="number"
+                        value={kmPlayerEdits.total_km_race ?? 0}
+                        onChange={(e) => handleKmPlayerEdit('total_km_race', e.target.value)}
+                        className="w-28 bg-dark-600 border border-dark-500 rounded px-2 py-1 text-center"
+                      />
+                    </td>
+                  </tr>
+
+                  {/* IA */}
+                  {kmSnapshot.ai_companies.map((ai) => (
+                    <tr key={ai.id} className="hover:bg-dark-700/50">
+                      <td className="px-3 py-2 font-semibold">{ai.name}</td>
+                      <td className="px-3 py-2">
+                        <span className={`text-xs px-2 py-1 rounded ${ai.drive_mode === 'race' ? 'bg-orange-700' : 'bg-blue-700'}`}>
+                          {ai.drive_mode === 'race' ? '🏎️ Course' : '🚗 Réel'}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2">
+                        <input
+                          type="number"
+                          value={kmEdits[ai.id]?.monthly_km_real ?? 0}
+                          onChange={(e) => handleKmEdit(ai.id, 'monthly_km_real', e.target.value)}
+                          className="w-28 bg-dark-600 border border-dark-500 rounded px-2 py-1 text-center"
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <input
+                          type="number"
+                          value={kmEdits[ai.id]?.monthly_km_race ?? 0}
+                          onChange={(e) => handleKmEdit(ai.id, 'monthly_km_race', e.target.value)}
+                          className="w-28 bg-dark-600 border border-dark-500 rounded px-2 py-1 text-center"
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <input
+                          type="number"
+                          value={kmEdits[ai.id]?.total_km_real ?? 0}
+                          onChange={(e) => handleKmEdit(ai.id, 'total_km_real', e.target.value)}
+                          className="w-28 bg-dark-600 border border-dark-500 rounded px-2 py-1 text-center"
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <input
+                          type="number"
+                          value={kmEdits[ai.id]?.total_km_race ?? 0}
+                          onChange={(e) => handleKmEdit(ai.id, 'total_km_race', e.target.value)}
+                          className="w-28 bg-dark-600 border border-dark-500 rounded px-2 py-1 text-center"
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="flex justify-end mt-4">
+              <button
+                onClick={saveAllKm}
+                disabled={kmSaving}
+                className="bg-green-600 hover:bg-green-700 px-6 py-2 rounded-lg font-semibold flex items-center gap-2"
+              >
+                {kmSaving ? '⏳ Sauvegarde...' : '✅ Sauvegarder tous les km'}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* AI Companies */}
@@ -478,142 +736,44 @@ export default function Admin() {
         </div>
       </div>
 
-      {/* AI Settings / Paramètres IA */}
+      {/* AI Settings */}
       <div className="bg-dark-800 rounded-xl p-6 border border-dark-700">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold flex items-center gap-2">
             <Sliders className="w-5 h-5 text-purple-500" />
             Paramètres IA (Équilibrage)
           </h2>
-          <button 
-            onClick={handleSaveSettings}
-            className="bg-green-600 hover:bg-green-700 px-4 py-2 rounded-lg"
-          >
+          <button onClick={handleSaveSettings} className="bg-green-600 hover:bg-green-700 px-4 py-2 rounded-lg">
             💾 Sauvegarder
           </button>
         </div>
         
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {/* AI Km Multiplier */}
-          <div className="bg-dark-700 rounded-lg p-4">
-            <label className="block text-dark-400 text-sm mb-1">Multiplicateur km IA</label>
-            <input
-              type="number"
-              step="0.1"
-              value={settings.ai_km_multiplier?.value || '1.5'}
-              onChange={(e) => handleSettingChange('ai_km_multiplier', e.target.value)}
-              className="w-full bg-dark-600 border border-dark-500 rounded-lg px-3 py-2"
-            />
-            <p className="text-dark-500 text-xs mt-1">Actuellement: x{settings.ai_km_multiplier?.value || '1.5'}</p>
-          </div>
-
-          {/* Player Km Multiplier */}
-          <div className="bg-dark-700 rounded-lg p-4">
-            <label className="block text-dark-400 text-sm mb-1">Multiplicateur km Joueur</label>
-            <input
-              type="number"
-              step="0.1"
-              value={settings.player_km_multiplier?.value || '1.0'}
-              onChange={(e) => handleSettingChange('player_km_multiplier', e.target.value)}
-              className="w-full bg-dark-600 border border-dark-500 rounded-lg px-3 py-2"
-            />
-            <p className="text-dark-500 text-xs mt-1">Actuellement: x{settings.player_km_multiplier?.value || '1.0'}</p>
-          </div>
-
-          {/* Break Probability */}
-          <div className="bg-dark-700 rounded-lg p-4">
-            <label className="block text-dark-400 text-sm mb-1">Probabilité pause</label>
-            <input
-              type="number"
-              step="0.01"
-              min="0"
-              max="1"
-              value={settings.ai_break_probability?.value || '0.15'}
-              onChange={(e) => handleSettingChange('ai_break_probability', e.target.value)}
-              className="w-full bg-dark-600 border border-dark-500 rounded-lg px-3 py-2"
-            />
-            <p className="text-dark-500 text-xs mt-1">{((parseFloat(settings.ai_break_probability?.value) || 0.15) * 100).toFixed(0)}% chance de pause/tick</p>
-          </div>
-
-          {/* Active Hours Start */}
-          <div className="bg-dark-700 rounded-lg p-4">
-            <label className="block text-dark-400 text-sm mb-1">Heure début activité</label>
-            <input
-              type="number"
-              min="0"
-              max="23"
-              value={settings.ai_active_hours_start?.value || '6'}
-              onChange={(e) => handleSettingChange('ai_active_hours_start', e.target.value)}
-              className="w-full bg-dark-600 border border-dark-500 rounded-lg px-3 py-2"
-            />
-            <p className="text-dark-500 text-xs mt-1">{settings.ai_active_hours_start?.value || '6'}h du matin</p>
-          </div>
-
-          {/* Active Hours End */}
-          <div className="bg-dark-700 rounded-lg p-4">
-            <label className="block text-dark-400 text-sm mb-1">Heure fin activité</label>
-            <input
-              type="number"
-              min="0"
-              max="24"
-              value={settings.ai_active_hours_end?.value || '22'}
-              onChange={(e) => handleSettingChange('ai_active_hours_end', e.target.value)}
-              className="w-full bg-dark-600 border border-dark-500 rounded-lg px-3 py-2"
-            />
-            <p className="text-dark-500 text-xs mt-1">{settings.ai_active_hours_end?.value || '22'}h le soir</p>
-          </div>
-
-          {/* Revenue per km Real */}
-          <div className="bg-dark-700 rounded-lg p-4">
-            <label className="block text-dark-400 text-sm mb-1">Revenu/km (Réel)</label>
-            <input
-              type="number"
-              step="0.1"
-              value={settings.revenue_per_km_real?.value || '1.20'}
-              onChange={(e) => handleSettingChange('revenue_per_km_real', e.target.value)}
-              className="w-full bg-dark-600 border border-dark-500 rounded-lg px-3 py-2"
-            />
-            <p className="text-dark-500 text-xs mt-1">{settings.revenue_per_km_real?.value || '1.20'}€/km</p>
-          </div>
-
-          {/* Revenue per km Race */}
-          <div className="bg-dark-700 rounded-lg p-4">
-            <label className="block text-dark-400 text-sm mb-1">Revenu/km (Course)</label>
-            <input
-              type="number"
-              step="0.1"
-              value={settings.revenue_per_km_race?.value || '0.80'}
-              onChange={(e) => handleSettingChange('revenue_per_km_race', e.target.value)}
-              className="w-full bg-dark-600 border border-dark-500 rounded-lg px-3 py-2"
-            />
-            <p className="text-dark-500 text-xs mt-1">{settings.revenue_per_km_race?.value || '0.80'}€/km</p>
-          </div>
-
-          {/* Base km per min Real */}
-          <div className="bg-dark-700 rounded-lg p-4">
-            <label className="block text-dark-400 text-sm mb-1">Km base/min (Réel)</label>
-            <input
-              type="number"
-              step="0.1"
-              value={settings.base_km_per_min_real?.value || '1.2'}
-              onChange={(e) => handleSettingChange('base_km_per_min_real', e.target.value)}
-              className="w-full bg-dark-600 border border-dark-500 rounded-lg px-3 py-2"
-            />
-            <p className="text-dark-500 text-xs mt-1">{settings.base_km_per_min_real?.value || '1.2'} km/min</p>
-          </div>
-
-          {/* Base km per min Race */}
-          <div className="bg-dark-700 rounded-lg p-4">
-            <label className="block text-dark-400 text-sm mb-1">Km base/min (Course)</label>
-            <input
-              type="number"
-              step="0.1"
-              value={settings.base_km_per_min_race?.value || '2.2'}
-              onChange={(e) => handleSettingChange('base_km_per_min_race', e.target.value)}
-              className="w-full bg-dark-600 border border-dark-500 rounded-lg px-3 py-2"
-            />
-            <p className="text-dark-500 text-xs mt-1">{settings.base_km_per_min_race?.value || '2.2'} km/min</p>
-          </div>
+          {[
+            { key: 'ai_km_multiplier',      label: 'Multiplicateur km IA',      step: '0.1',  suffix: 'x' },
+            { key: 'player_km_multiplier',  label: 'Multiplicateur km Joueur',  step: '0.1',  suffix: 'x' },
+            { key: 'ai_break_probability',  label: 'Probabilité pause',         step: '0.01', suffix: '' },
+            { key: 'ai_active_hours_start', label: 'Heure début activité',      step: '1',    suffix: 'h' },
+            { key: 'ai_active_hours_end',   label: 'Heure fin activité',        step: '1',    suffix: 'h' },
+            { key: 'revenue_per_km_real',   label: 'Revenu/km (Réel)',          step: '0.1',  suffix: '€/km' },
+            { key: 'revenue_per_km_race',   label: 'Revenu/km (Course)',        step: '0.1',  suffix: '€/km' },
+            { key: 'base_km_per_min_real',  label: 'Km base/min (Réel)',        step: '0.1',  suffix: 'km/min' },
+            { key: 'base_km_per_min_race',  label: 'Km base/min (Course)',      step: '0.1',  suffix: 'km/min' },
+          ].map(({ key, label, step, suffix }) => (
+            <div key={key} className="bg-dark-700 rounded-lg p-4">
+              <label className="block text-dark-400 text-sm mb-1">{label}</label>
+              <input
+                type="number"
+                step={step}
+                value={settings[key]?.value || ''}
+                onChange={(e) => handleSettingChange(key, e.target.value)}
+                className="w-full bg-dark-600 border border-dark-500 rounded-lg px-3 py-2"
+              />
+              <p className="text-dark-500 text-xs mt-1">
+                Actuellement: {settings[key]?.value || '—'}{suffix}
+              </p>
+            </div>
+          ))}
         </div>
       </div>
 
@@ -623,7 +783,6 @@ export default function Admin() {
           🚛 Camions disponibles ({trucks.length})
         </h2>
         
-        {/* Add new truck */}
         <div className="flex gap-3 mb-4">
           <input
             type="text"
@@ -649,7 +808,6 @@ export default function Admin() {
           </button>
         </div>
 
-        {/* Trucks list */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {trucks.map((truck) => (
             <div key={truck.id} className="bg-dark-700 rounded-lg p-3 flex items-center justify-between">

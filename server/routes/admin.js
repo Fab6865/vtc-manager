@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { db, resetMonthlyKm } = require('../database');
 const { v4: uuidv4 } = require('uuid');
+const path = require('path');
 
 // Global setting for free hiring
 let freeHiringEnabled = false;
@@ -62,7 +63,6 @@ router.post('/simulate-time', (req, res) => {
     const { minutes = 60 } = req.body;
     const aiSimulator = require('../aiSimulator');
 
-    // Use forceSimulateAll to ignore night time restrictions
     for (let i = 0; i < minutes; i++) {
       aiSimulator.forceSimulateAll();
     }
@@ -83,17 +83,14 @@ router.post('/reset-monthly', (req, res) => {
   }
 });
 
-// Test auto-detection of month change (simulates what happens at month end)
+// Test auto-detection of month change
 router.post('/test-month-change', (req, res) => {
   try {
     resetMonthlyKm();
     res.json({
       success: true,
-      message: '🧪 Test réussi! Le système a bien détecté le changement de mois.',
-      actions: [
-        'Km mensuels remis à 0',
-        'Modes IA redistribués 50/50'
-      ]
+      message: 'Test réussi! Le système a bien détecté le changement de mois.',
+      actions: ['Km mensuels remis à 0', 'Modes IA redistribués 50/50']
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -103,7 +100,6 @@ router.post('/test-month-change', (req, res) => {
 // Full reset
 router.post('/reset-all', (req, res) => {
   try {
-    // Reset company
     db.prepare(`
       UPDATE company SET 
         name = 'Ma VTC',
@@ -113,28 +109,14 @@ router.post('/reset-all', (req, res) => {
       WHERE id = 1
     `).run();
 
-    // Delete all drivers
     db.prepare('DELETE FROM drivers').run();
-
-    // Reset all trucks
     db.prepare('UPDATE trucks SET owned = 0, rented = 0, assigned_driver_id = NULL, total_km = 0').run();
-
-    // Delete all deliveries
     db.prepare('DELETE FROM deliveries').run();
-
-    // Delete gallery
     db.prepare('DELETE FROM gallery').run();
-
-    // Delete garage decorations
     db.prepare('DELETE FROM garage_decorations').run();
-
-    // Reset garage
     db.prepare('UPDATE garage SET name = "Mon Garage", capacity = 2, level = 1 WHERE id = 1').run();
-
-    // Reset AI companies
     db.prepare('DELETE FROM ai_companies').run();
 
-    // Re-initialize AI companies — FIX: params positionnels (? au lieu de @name)
     const companies = [
       { id: uuidv4(), name: 'TransEuropa',        drive_mode: 'real', skill_level: 2, balance: 50000, driver_count: 3, truck_count: 3 },
       { id: uuidv4(), name: 'Nordic Freight',      drive_mode: 'real', skill_level: 3, balance: 80000, driver_count: 5, truck_count: 4 },
@@ -161,7 +143,7 @@ router.post('/reset-all', (req, res) => {
   }
 });
 
-// Unlock all trucks (give ownership)
+// Unlock all trucks
 router.post('/unlock-trucks', (req, res) => {
   try {
     db.prepare('UPDATE trucks SET owned = 1').run();
@@ -194,7 +176,6 @@ router.post('/set-ranking', (req, res) => {
 
     const drivers = db.prepare('SELECT * FROM drivers WHERE is_active = 1').all();
     const kmPerDriver = targetKm / Math.max(drivers.length, 1);
-
     const updateColumn = mode === 'real' ? 'monthly_km_real' : 'monthly_km_race';
     db.prepare(`UPDATE drivers SET ${updateColumn} = ?`).run(kmPerDriver);
 
@@ -230,7 +211,7 @@ router.post('/ai-company', (req, res) => {
   }
 });
 
-// Update AI company
+// Update AI company (infos générales)
 router.put('/ai-company/:id', (req, res) => {
   try {
     const { id } = req.params;
@@ -252,13 +233,13 @@ router.put('/ai-company/:id', (req, res) => {
           driver_count = ?
       WHERE id = ?
     `).run(
-      name        !== undefined ? name        : current.name,
-      drive_mode  !== undefined ? drive_mode  : current.drive_mode,
-      skill_level !== undefined ? skill_level : current.skill_level,
-      personality !== undefined ? personality : current.personality,
-      max_drivers !== undefined ? max_drivers : current.max_drivers,
-      balance     !== undefined ? balance     : current.balance,
-      driver_count!== undefined ? driver_count: current.driver_count,
+      name         !== undefined ? name         : current.name,
+      drive_mode   !== undefined ? drive_mode   : current.drive_mode,
+      skill_level  !== undefined ? skill_level  : current.skill_level,
+      personality  !== undefined ? personality  : current.personality,
+      max_drivers  !== undefined ? max_drivers  : current.max_drivers,
+      balance      !== undefined ? balance      : current.balance,
+      driver_count !== undefined ? driver_count : current.driver_count,
       id
     );
 
@@ -268,6 +249,163 @@ router.put('/ai-company/:id', (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+// ============ GESTION KM (restauration après reset Render) ============
+
+// Récupérer les km mensuels de toutes les entreprises + joueur
+router.get('/km-snapshot', (req, res) => {
+  try {
+    const aiCompanies = db.prepare(`
+      SELECT id, name, drive_mode, monthly_km_real, monthly_km_race, total_km_real, total_km_race
+      FROM ai_companies 
+      ORDER BY name
+    `).all();
+
+    const player = db.prepare(`
+      SELECT id, name, drive_mode, monthly_km_real, monthly_km_race, total_km_real, total_km_race
+      FROM company WHERE id = 1
+    `).get();
+
+    res.json({
+      player,
+      ai_companies: aiCompanies,
+      snapshot_date: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Modifier les km mensuels d'une entreprise IA
+router.put('/ai-company/:id/km', (req, res) => {
+  try {
+    const { id } = req.params;
+    const { monthly_km_real, monthly_km_race, total_km_real, total_km_race } = req.body;
+
+    const current = db.prepare('SELECT * FROM ai_companies WHERE id = ?').get(id);
+    if (!current) {
+      return res.status(404).json({ error: 'Entreprise non trouvée' });
+    }
+
+    db.prepare(`
+      UPDATE ai_companies
+      SET monthly_km_real = ?,
+          monthly_km_race = ?,
+          total_km_real = ?,
+          total_km_race = ?
+      WHERE id = ?
+    `).run(
+      monthly_km_real !== undefined ? parseFloat(monthly_km_real) : current.monthly_km_real,
+      monthly_km_race !== undefined ? parseFloat(monthly_km_race) : current.monthly_km_race,
+      total_km_real   !== undefined ? parseFloat(total_km_real)   : current.total_km_real,
+      total_km_race   !== undefined ? parseFloat(total_km_race)   : current.total_km_race,
+      id
+    );
+
+    const company = db.prepare('SELECT * FROM ai_companies WHERE id = ?').get(id);
+    res.json(company);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Modifier les km mensuels du joueur
+router.put('/player/km', (req, res) => {
+  try {
+    const { monthly_km_real, monthly_km_race, total_km_real, total_km_race } = req.body;
+
+    const current = db.prepare('SELECT * FROM company WHERE id = 1').get();
+
+    db.prepare(`
+      UPDATE company
+      SET monthly_km_real = ?,
+          monthly_km_race = ?,
+          total_km_real = ?,
+          total_km_race = ?
+      WHERE id = 1
+    `).run(
+      monthly_km_real !== undefined ? parseFloat(monthly_km_real) : current.monthly_km_real,
+      monthly_km_race !== undefined ? parseFloat(monthly_km_race) : current.monthly_km_race,
+      total_km_real   !== undefined ? parseFloat(total_km_real)   : current.total_km_real,
+      total_km_race   !== undefined ? parseFloat(total_km_race)   : current.total_km_race
+    );
+
+    const company = db.prepare('SELECT * FROM company WHERE id = 1').get();
+    res.json(company);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Restaurer un snapshot complet (toutes les entreprises d'un coup)
+// Body: { player: { monthly_km_real, monthly_km_race, ... }, ai_companies: [{ id, monthly_km_real, ... }] }
+router.post('/restore-km', (req, res) => {
+  try {
+    const { player, ai_companies } = req.body;
+
+    // Restaurer le joueur
+    if (player) {
+      db.prepare(`
+        UPDATE company
+        SET monthly_km_real = ?,
+            monthly_km_race = ?,
+            total_km_real = ?,
+            total_km_race = ?
+        WHERE id = 1
+      `).run(
+        parseFloat(player.monthly_km_real) || 0,
+        parseFloat(player.monthly_km_race) || 0,
+        parseFloat(player.total_km_real)   || 0,
+        parseFloat(player.total_km_race)   || 0
+      );
+    }
+
+    // Restaurer les IA par nom (plus fiable que par ID après un reset)
+    if (ai_companies && Array.isArray(ai_companies)) {
+      for (const c of ai_companies) {
+        // Cherche par ID d'abord, puis par nom en fallback
+        const existing = db.prepare('SELECT * FROM ai_companies WHERE id = ?').get(c.id)
+          || db.prepare('SELECT * FROM ai_companies WHERE name = ?').get(c.name);
+
+        if (existing) {
+          db.prepare(`
+            UPDATE ai_companies
+            SET monthly_km_real = ?,
+                monthly_km_race = ?,
+                total_km_real = ?,
+                total_km_race = ?
+            WHERE id = ?
+          `).run(
+            parseFloat(c.monthly_km_real) || 0,
+            parseFloat(c.monthly_km_race) || 0,
+            parseFloat(c.total_km_real)   || 0,
+            parseFloat(c.total_km_race)   || 0,
+            existing.id
+          );
+        }
+      }
+    }
+
+    res.json({ success: true, message: 'Km restaurés avec succès' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============ BACKUP DB ============
+
+// Télécharger la DB complète (à faire avant chaque mise à jour)
+router.get('/backup-db', (req, res) => {
+  try {
+    const dbPath = path.join(__dirname, '../vtc.db');
+    const date = new Date().toISOString().split('T')[0];
+    res.download(dbPath, `vtc-backup-${date}.db`);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============ FIN GESTION KM ============
 
 // Delete AI company
 router.delete('/ai-company/:id', (req, res) => {
@@ -290,7 +428,7 @@ router.get('/ai-companies', (req, res) => {
   }
 });
 
-// Toggle god mode (no costs)
+// Toggle god mode
 router.post('/god-mode', (req, res) => {
   try {
     db.prepare('UPDATE company SET balance = 999999999 WHERE id = 1').run();
@@ -350,18 +488,14 @@ router.delete('/truck/:id', (req, res) => {
   }
 });
 
-// ============ ADMIN SETTINGS (Paramètres IA) ============
+// ============ ADMIN SETTINGS ============
 
-// Get all admin settings
 router.get('/settings', (req, res) => {
   try {
     const settings = db.prepare('SELECT * FROM admin_settings ORDER BY key').all();
     const settingsObj = {};
     for (const s of settings) {
-      settingsObj[s.key] = {
-        value: s.value,
-        description: s.description
-      };
+      settingsObj[s.key] = { value: s.value, description: s.description };
     }
     res.json(settingsObj);
   } catch (error) {
@@ -369,7 +503,6 @@ router.get('/settings', (req, res) => {
   }
 });
 
-// Update a single setting
 router.put('/settings/:key', (req, res) => {
   try {
     const { key } = req.params;
@@ -384,7 +517,6 @@ router.put('/settings/:key', (req, res) => {
   }
 });
 
-// Update multiple settings at once
 router.put('/settings', (req, res) => {
   try {
     const settings = req.body;
@@ -400,7 +532,6 @@ router.put('/settings', (req, res) => {
   }
 });
 
-// Helper function to get a setting value
 function getSetting(key, defaultValue = null) {
   try {
     const setting = db.prepare('SELECT value FROM admin_settings WHERE key = ?').get(key);
@@ -410,7 +541,6 @@ function getSetting(key, defaultValue = null) {
   }
 }
 
-// Reset shop items (reinitialize with new items)
 router.post('/reset-shop', (req, res) => {
   try {
     db.prepare('DELETE FROM shop_items').run();

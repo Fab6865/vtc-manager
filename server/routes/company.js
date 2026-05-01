@@ -15,7 +15,19 @@ const storage = multer.diskStorage({
     cb(null, `logo-${Date.now()}${ext}`);
   }
 });
-const upload = multer({ storage });
+
+// Limite 2MB + images uniquement
+const upload = multer({
+  storage,
+  limits: { fileSize: 2 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = /jpeg|jpg|png|gif|webp|svg/;
+    const ext = allowed.test(path.extname(file.originalname).toLowerCase());
+    const mime = allowed.test(file.mimetype);
+    if (ext && mime) return cb(null, true);
+    cb(new Error('Type de fichier non autorise (images uniquement)'));
+  }
+});
 
 // Get company info
 router.get('/', (req, res) => {
@@ -23,7 +35,7 @@ router.get('/', (req, res) => {
     const company = db.prepare('SELECT * FROM company WHERE id = 1').get();
     const driverCount = db.prepare('SELECT COUNT(*) as count FROM drivers WHERE is_active = 1').get().count;
     const truckCount = db.prepare('SELECT COUNT(*) as count FROM trucks WHERE owned = 1').get().count;
-    
+
     res.json({
       ...company,
       driver_count: driverCount,
@@ -38,14 +50,14 @@ router.get('/', (req, res) => {
 router.put('/', (req, res) => {
   try {
     const { name, drive_mode } = req.body;
-    
+
     if (name) {
       db.prepare('UPDATE company SET name = ? WHERE id = 1').run(name);
     }
     if (drive_mode && ['real', 'race'].includes(drive_mode)) {
       db.prepare('UPDATE company SET drive_mode = ? WHERE id = 1').run(drive_mode);
     }
-    
+
     const company = db.prepare('SELECT * FROM company WHERE id = 1').get();
     res.json(company);
   } catch (error) {
@@ -57,14 +69,17 @@ router.put('/', (req, res) => {
 router.post('/logo', upload.single('logo'), (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded' });
+      return res.status(400).json({ error: 'Aucun fichier uploade' });
     }
-    
+
     const logoPath = `/uploads/logos/${req.file.filename}`;
     db.prepare('UPDATE company SET logo = ? WHERE id = 1').run(logoPath);
-    
+
     res.json({ logo: logoPath });
   } catch (error) {
+    if (error.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({ error: 'Fichier trop volumineux (max 2MB)' });
+    }
     res.status(500).json({ error: error.message });
   }
 });
@@ -80,17 +95,24 @@ router.get('/dashboard', (req, res) => {
       ORDER BY delivered_at DESC 
       LIMIT 5
     `).all();
-    
-    // Use company km directly (includes player's own km)
+
     const totalKmReal = company.monthly_km_real || 0;
     const totalKmRace = company.monthly_km_race || 0;
-    
-    // Get ranking position
+
     const allCompanies = db.prepare('SELECT * FROM ai_companies').all();
-    
-    const realRanking = allCompanies.filter(c => c.monthly_km_real > totalKmReal).length + 1;
-    const raceRanking = allCompanies.filter(c => c.monthly_km_race > totalKmRace).length + 1;
-    
+
+    // FIX: classement filtré par mode
+    // On compare uniquement avec les IA qui sont dans le même mode que le joueur
+    const realCompanies = allCompanies.filter(c => c.drive_mode === 'real');
+    const raceCompanies = allCompanies.filter(c => c.drive_mode === 'race');
+
+    const realRanking = realCompanies.filter(c => c.monthly_km_real > totalKmReal).length + 1;
+    const raceRanking = raceCompanies.filter(c => c.monthly_km_race > totalKmRace).length + 1;
+
+    // Total participants par mode (IA + joueur si dans ce mode)
+    const totalRealCompanies = realCompanies.length + (company.drive_mode === 'real' ? 1 : 0);
+    const totalRaceCompanies = raceCompanies.length + (company.drive_mode === 'race' ? 1 : 0);
+
     res.json({
       company,
       stats: {
@@ -101,6 +123,8 @@ router.get('/dashboard', (req, res) => {
         monthly_km_race: totalKmRace,
         real_ranking: realRanking,
         race_ranking: raceRanking,
+        total_real_companies: totalRealCompanies,
+        total_race_companies: totalRaceCompanies,
         total_companies: allCompanies.length + 1
       },
       recent_deliveries: recentDeliveries,
@@ -124,11 +148,10 @@ router.get('/transactions', (req, res) => {
       ORDER BY t.created_at DESC
       LIMIT ?
     `).all(limit);
-    
-    // Get summary stats
+
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
-    
+
     const todayStats = db.prepare(`
       SELECT 
         SUM(CASE WHEN type = 'income' THEN amount ELSE 0 END) as total_income,
@@ -136,7 +159,7 @@ router.get('/transactions', (req, res) => {
       FROM transactions
       WHERE created_at >= ?
     `).get(todayStart.toISOString());
-    
+
     res.json({
       transactions,
       summary: {
