@@ -58,7 +58,7 @@ class DatabaseWrapper {
 
 async function initDatabase() {
   const SQL = await initSqlJs();
-  
+
   let database;
   if (fs.existsSync(dbPath)) {
     const fileBuffer = fs.readFileSync(dbPath);
@@ -66,7 +66,7 @@ async function initDatabase() {
   } else {
     database = new SQL.Database();
   }
-  
+
   db = new DatabaseWrapper(database);
   return db;
 }
@@ -94,7 +94,7 @@ function initialize() {
     )
   `);
 
-  // Drivers (player's AI drivers)
+  // Drivers
   db.exec(`
     CREATE TABLE IF NOT EXISTS drivers (
       id TEXT PRIMARY KEY,
@@ -165,7 +165,7 @@ function initialize() {
     )
   `);
 
-  // Deliveries (player's deliveries)
+  // Deliveries
   db.exec(`
     CREATE TABLE IF NOT EXISTS deliveries (
       id TEXT PRIMARY KEY,
@@ -189,7 +189,7 @@ function initialize() {
     )
   `);
 
-  // AI Companies (competitors)
+  // AI Companies
   db.exec(`
     CREATE TABLE IF NOT EXISTS ai_companies (
       id TEXT PRIMARY KEY,
@@ -212,7 +212,7 @@ function initialize() {
     )
   `);
 
-  // Transaction history (expenses/income log)
+  // Transactions
   db.exec(`
     CREATE TABLE IF NOT EXISTS transactions (
       id TEXT PRIMARY KEY,
@@ -226,7 +226,7 @@ function initialize() {
     )
   `);
 
-  // Gallery photos
+  // Gallery
   db.exec(`
     CREATE TABLE IF NOT EXISTS gallery (
       id TEXT PRIMARY KEY,
@@ -236,7 +236,27 @@ function initialize() {
     )
   `);
 
-  // Shop items
+  // Admin settings
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS admin_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      description TEXT DEFAULT ''
+    )
+  `);
+
+  // Active boosters
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS active_boosters (
+      id TEXT PRIMARY KEY,
+      booster_name TEXT NOT NULL,
+      effect_value REAL NOT NULL,
+      expires_at DATETIME NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  // Shop items (avec colonne duration)
   db.exec(`
     CREATE TABLE IF NOT EXISTS shop_items (
       id TEXT PRIMARY KEY,
@@ -246,9 +266,35 @@ function initialize() {
       price REAL NOT NULL,
       effect_type TEXT DEFAULT NULL,
       effect_value REAL DEFAULT 0,
+      duration INTEGER DEFAULT 60,
       image TEXT DEFAULT NULL
     )
   `);
+
+  // Migration : ajoute duration si table existait sans elle
+  try {
+    db.exec(`ALTER TABLE shop_items ADD COLUMN duration INTEGER DEFAULT 60`);
+    console.log('Migration: colonne duration ajoutee a shop_items');
+  } catch (e) {
+    // Colonne deja presente, on ignore
+  }
+
+  // Boosters : un seul booster avec ID fixe, reinsere proprement a chaque demarrage
+  db.exec(`DELETE FROM shop_items WHERE category = 'booster'`);
+  db.prepare(`
+    INSERT INTO shop_items (id, category, name, description, price, effect_type, effect_value, duration)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    'booster-weekend-warrior',
+    'booster',
+    'Week-end Warrior',
+    '+30% km pendant 48h',
+    8000,
+    'km_boost',
+    30,
+    2880
+  );
+  console.log('Booster Week-end Warrior charge (48h, +30%)');
 
   // Initialize player company if not exists
   const company = db.prepare('SELECT * FROM company WHERE id = 1').get();
@@ -262,59 +308,107 @@ function initialize() {
     db.prepare('INSERT INTO garage (id) VALUES (1)').run();
   }
 
-  // Initialize shop items
+  // Initialize shop items (formations, upgrades, decos — pas les boosters)
   initializeShopItems();
 
   // Initialize AI companies
   initializeAICompanies();
 
-  // Initialize default trucks available for purchase
+  // Initialize default trucks
   initializeTrucks();
 
-  console.log('✅ Database initialized');
+  // Initialize admin settings
+  initializeAdminSettings();
+
+  console.log('Database initialized');
+}
+
+function initializeAdminSettings() {
+  const defaultSettings = [
+    { key: 'ai_km_multiplier',      value: '1.5',  description: 'Multiplicateur km pour les IA' },
+    { key: 'ai_break_probability',  value: '0.15', description: 'Probabilite de pause IA (0-1)' },
+    { key: 'ai_active_hours_start', value: '6',    description: 'Heure debut activite IA' },
+    { key: 'ai_active_hours_end',   value: '22',   description: 'Heure fin activite IA' },
+    { key: 'player_km_multiplier',  value: '1.0',  description: 'Multiplicateur km pour le joueur' },
+    { key: 'revenue_per_km_real',   value: '1.20', description: 'Revenu par km (mode reel)' },
+    { key: 'revenue_per_km_race',   value: '0.80', description: 'Revenu par km (mode course)' },
+    { key: 'base_km_per_min_real',  value: '1.2',  description: 'Km de base par minute (mode reel)' },
+    { key: 'base_km_per_min_race',  value: '2.2',  description: 'Km de base par minute (mode course)' }
+  ];
+
+  for (const setting of defaultSettings) {
+    const exists = db.prepare('SELECT * FROM admin_settings WHERE key = ?').get(setting.key);
+    if (!exists) {
+      db.prepare('INSERT INTO admin_settings (key, value, description) VALUES (?, ?, ?)')
+        .run(setting.key, setting.value, setting.description);
+    }
+  }
 }
 
 function initializeShopItems() {
-  const count = db.prepare('SELECT COUNT(*) as count FROM shop_items').get().count;
+  // Ne touche pas aux boosters (geres separement)
+  const count = db.prepare(`SELECT COUNT(*) as count FROM shop_items WHERE category != 'booster'`).get().count;
   if (count > 0) return;
 
   const items = [
-    // Driver trainings
-    { id: uuidv4(), category: 'training', name: 'Formation conduite base', description: '+5% km/jour', price: 500, effect_type: 'driving', effect_value: 5 },
-    { id: uuidv4(), category: 'training', name: 'Formation conduite avancée', description: '+15% km/jour', price: 1500, effect_type: 'driving', effect_value: 15 },
-    { id: uuidv4(), category: 'training', name: 'Formation éco-conduite', description: '-10% carburant', price: 800, effect_type: 'eco', effect_value: 10 },
-    { id: uuidv4(), category: 'training', name: 'Certification ADR', description: 'Transport matières dangereuses +40% revenus', price: 2000, effect_type: 'adr', effect_value: 40 },
-    { id: uuidv4(), category: 'training', name: 'Formation longue distance', description: '+endurance', price: 1200, effect_type: 'endurance', effect_value: 20 },
-    
-    // Truck upgrades
-    { id: uuidv4(), category: 'truck_upgrade', name: 'Pneus premium', description: '-5% carburant', price: 800, effect_type: 'fuel', effect_value: 5 },
-    { id: uuidv4(), category: 'truck_upgrade', name: 'Déflecteurs', description: '-8% carburant', price: 600, effect_type: 'fuel', effect_value: 8 },
-    { id: uuidv4(), category: 'truck_upgrade', name: 'Lit confort', description: '+efficacité chauffeur', price: 400, effect_type: 'comfort', effect_value: 10 },
-    { id: uuidv4(), category: 'truck_upgrade', name: 'Frigo cabine', description: 'Confort +5%', price: 300, effect_type: 'comfort', effect_value: 5 },
-    { id: uuidv4(), category: 'truck_upgrade', name: 'Lightbox toit', description: 'Affiche ton logo', price: 700, effect_type: 'aesthetic', effect_value: 0 },
-    { id: uuidv4(), category: 'truck_upgrade', name: 'Klaxon custom', description: 'Style!', price: 150, effect_type: 'aesthetic', effect_value: 0 },
-    
-    // Garage decorations
-    { id: uuidv4(), category: 'garage_deco', name: 'Plantes', description: 'Esthétique', price: 50, effect_type: 'aesthetic', effect_value: 0 },
-    { id: uuidv4(), category: 'garage_deco', name: 'Néons LED', description: 'Ambiance gaming', price: 200, effect_type: 'aesthetic', effect_value: 0 },
-    { id: uuidv4(), category: 'garage_deco', name: 'Trophées', description: 'Affiche tes victoires', price: 500, effect_type: 'aesthetic', effect_value: 0 },
-    { id: uuidv4(), category: 'garage_deco', name: 'Distributeur café', description: '+moral chauffeurs', price: 300, effect_type: 'morale', effect_value: 5 },
-    { id: uuidv4(), category: 'garage_deco', name: 'TV écran géant', description: 'Flex!', price: 800, effect_type: 'aesthetic', effect_value: 0 },
-    { id: uuidv4(), category: 'garage_deco', name: 'Sol époxy', description: 'Garage premium', price: 1500, effect_type: 'aesthetic', effect_value: 0 },
-    { id: uuidv4(), category: 'garage_deco', name: 'Enseigne lumineuse', description: 'Avec ton logo', price: 1000, effect_type: 'aesthetic', effect_value: 0 },
-    { id: uuidv4(), category: 'garage_deco', name: 'Canapé lounge', description: 'Espace détente', price: 600, effect_type: 'morale', effect_value: 3 },
-    
-    // Garage upgrades
-    { id: uuidv4(), category: 'garage_upgrade', name: 'Agrandissement +2 slots', description: '+2 places camion', price: 5000, effect_type: 'capacity', effect_value: 2 },
-    { id: uuidv4(), category: 'garage_upgrade', name: 'Atelier', description: '-20% coûts réparation', price: 8000, effect_type: 'repair', effect_value: 20 },
-    { id: uuidv4(), category: 'garage_upgrade', name: 'Station carburant', description: '-15% coûts carburant', price: 12000, effect_type: 'fuel', effect_value: 15 },
+    // ============ FORMATIONS ============
+    { id: uuidv4(), category: 'training', name: 'Formation conduite base',    description: '+5% km/jour',                        price: 500,  effect_type: 'driving',   effect_value: 5  },
+    { id: uuidv4(), category: 'training', name: 'Formation conduite avancee', description: '+15% km/jour',                       price: 1500, effect_type: 'driving',   effect_value: 15 },
+    { id: uuidv4(), category: 'training', name: 'Formation conduite expert',  description: '+25% km/jour',                       price: 3000, effect_type: 'driving',   effect_value: 25 },
+    { id: uuidv4(), category: 'training', name: 'Certification ADR',          description: 'Transport matieres dangereuses +40%', price: 2000, effect_type: 'adr',      effect_value: 40 },
+    { id: uuidv4(), category: 'training', name: 'Formation longue distance',  description: '+20% endurance',                     price: 1200, effect_type: 'endurance', effect_value: 20 },
+    { id: uuidv4(), category: 'training', name: 'Permis convoi exceptionnel', description: 'Acces aux gros contrats',            price: 4000, effect_type: 'special',   effect_value: 1  },
+    { id: uuidv4(), category: 'training', name: 'Formation nuit',             description: 'Conduite nocturne efficace',         price: 1800, effect_type: 'night',     effect_value: 15 },
+
+    // ============ UPGRADES CAMION ============
+    { id: uuidv4(), category: 'truck_upgrade', name: 'Lit confort',     description: '+10% efficacite chauffeur',    price: 400,  effect_type: 'comfort',    effect_value: 10 },
+    { id: uuidv4(), category: 'truck_upgrade', name: 'Frigo cabine',    description: '+5% confort',                  price: 300,  effect_type: 'comfort',    effect_value: 5  },
+    { id: uuidv4(), category: 'truck_upgrade', name: 'Lightbox toit',   description: 'Affiche ton logo',             price: 700,  effect_type: 'aesthetic',  effect_value: 0  },
+    { id: uuidv4(), category: 'truck_upgrade', name: 'Klaxon custom',   description: 'Style!',                       price: 150,  effect_type: 'aesthetic',  effect_value: 0  },
+    { id: uuidv4(), category: 'truck_upgrade', name: 'GPS avance',      description: '+5% km meilleurs itineraires', price: 800,  effect_type: 'navigation', effect_value: 5  },
+    { id: uuidv4(), category: 'truck_upgrade', name: 'Siege massant',   description: '+15% confort',                 price: 1200, effect_type: 'comfort',    effect_value: 15 },
+    { id: uuidv4(), category: 'truck_upgrade', name: 'Sono premium',    description: 'Moral chauffeur +10%',         price: 600,  effect_type: 'morale',     effect_value: 10 },
+    { id: uuidv4(), category: 'truck_upgrade', name: 'Peinture custom', description: 'Personnalise ton camion',      price: 2000, effect_type: 'aesthetic',  effect_value: 0  },
+    { id: uuidv4(), category: 'truck_upgrade', name: 'Chrome pack',     description: 'Bling bling!',                 price: 3500, effect_type: 'aesthetic',  effect_value: 0  },
+    { id: uuidv4(), category: 'truck_upgrade', name: 'Moteur tune',     description: '+10% vitesse max',             price: 5000, effect_type: 'speed',      effect_value: 10 },
+
+    // ============ DECORATIONS GARAGE ============
+    { id: uuidv4(), category: 'garage_deco', name: 'Plantes vertes',      description: 'Ambiance zen',               price: 50,   effect_type: 'aesthetic', effect_value: 0  },
+    { id: uuidv4(), category: 'garage_deco', name: 'Palmier',             description: 'Tropical vibes',             price: 150,  effect_type: 'aesthetic', effect_value: 0  },
+    { id: uuidv4(), category: 'garage_deco', name: 'Neons LED',           description: 'Ambiance gaming',            price: 200,  effect_type: 'aesthetic', effect_value: 0  },
+    { id: uuidv4(), category: 'garage_deco', name: 'Neons RGB',           description: 'Toutes les couleurs!',       price: 400,  effect_type: 'aesthetic', effect_value: 0  },
+    { id: uuidv4(), category: 'garage_deco', name: 'Armoire trophees',    description: 'Affiche tes victoires',      price: 500,  effect_type: 'aesthetic', effect_value: 0  },
+    { id: uuidv4(), category: 'garage_deco', name: 'Distributeur cafe',   description: '+5% moral chauffeurs',       price: 300,  effect_type: 'morale',    effect_value: 5  },
+    { id: uuidv4(), category: 'garage_deco', name: 'Distributeur snacks', description: '+3% moral chauffeurs',       price: 250,  effect_type: 'morale',    effect_value: 3  },
+    { id: uuidv4(), category: 'garage_deco', name: 'TV ecran geant',      description: 'Flex!',                      price: 800,  effect_type: 'aesthetic', effect_value: 0  },
+    { id: uuidv4(), category: 'garage_deco', name: 'Console gaming',      description: 'Detente chauffeurs',         price: 600,  effect_type: 'morale',    effect_value: 5  },
+    { id: uuidv4(), category: 'garage_deco', name: 'Billard',             description: 'Espace detente premium',     price: 1500, effect_type: 'morale',    effect_value: 8  },
+    { id: uuidv4(), category: 'garage_deco', name: 'Sol epoxy',           description: 'Garage premium',             price: 1500, effect_type: 'aesthetic', effect_value: 0  },
+    { id: uuidv4(), category: 'garage_deco', name: 'Enseigne lumineuse',  description: 'Avec ton logo',              price: 1000, effect_type: 'aesthetic', effect_value: 0  },
+    { id: uuidv4(), category: 'garage_deco', name: 'Canape lounge',       description: 'Espace detente',             price: 600,  effect_type: 'morale',    effect_value: 3  },
+    { id: uuidv4(), category: 'garage_deco', name: 'Aquarium',            description: 'Relaxant',                   price: 800,  effect_type: 'aesthetic', effect_value: 0  },
+    { id: uuidv4(), category: 'garage_deco', name: 'Jukebox vintage',     description: 'Musique retro',              price: 1200, effect_type: 'morale',    effect_value: 5  },
+    { id: uuidv4(), category: 'garage_deco', name: 'Flipper',             description: 'Fun!',                       price: 2000, effect_type: 'morale',    effect_value: 7  },
+    { id: uuidv4(), category: 'garage_deco', name: 'Bar',                 description: 'Afterwork entre chauffeurs', price: 3000, effect_type: 'morale',    effect_value: 10 },
+    { id: uuidv4(), category: 'garage_deco', name: 'Poster camion',       description: 'Deco murale',                price: 100,  effect_type: 'aesthetic', effect_value: 0  },
+    { id: uuidv4(), category: 'garage_deco', name: 'Drapeau entreprise',  description: 'Fierte!',                    price: 200,  effect_type: 'aesthetic', effect_value: 0  },
+    { id: uuidv4(), category: 'garage_deco', name: 'Horloge murale',      description: 'Toujours a lheure',          price: 80,   effect_type: 'aesthetic', effect_value: 0  },
+    { id: uuidv4(), category: 'garage_deco', name: 'Mini-frigo',          description: 'Boissons fraiches',          price: 350,  effect_type: 'morale',    effect_value: 2  },
+
+    // ============ UPGRADES GARAGE ============
+    { id: uuidv4(), category: 'garage_upgrade', name: 'Agrandissement 2 slots', description: '+2 places camion',       price: 5000,  effect_type: 'capacity',   effect_value: 2  },
+    { id: uuidv4(), category: 'garage_upgrade', name: 'Agrandissement 5 slots', description: '+5 places camion',       price: 10000, effect_type: 'capacity',   effect_value: 5  },
+    { id: uuidv4(), category: 'garage_upgrade', name: 'Atelier mecanique',      description: 'Reparations sur place',  price: 8000,  effect_type: 'repair',     effect_value: 20 },
+    { id: uuidv4(), category: 'garage_upgrade', name: 'Salle de repos',         description: '+10% moral global',      price: 6000,  effect_type: 'morale',     effect_value: 10 },
+    { id: uuidv4(), category: 'garage_upgrade', name: 'Bureau manager',         description: 'Gestion amelioree',      price: 4000,  effect_type: 'management', effect_value: 5  },
+    { id: uuidv4(), category: 'garage_upgrade', name: 'Parking securise',       description: 'Protection des camions', price: 7000,  effect_type: 'security',   effect_value: 1  },
   ];
 
   for (const item of items) {
     db.prepare(`
-      INSERT INTO shop_items (id, category, name, description, price, effect_type, effect_value)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(item.id, item.category, item.name, item.description, item.price, item.effect_type, item.effect_value);
+      INSERT INTO shop_items (id, category, name, description, price, effect_type, effect_value, duration)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(item.id, item.category, item.name, item.description, item.price, item.effect_type, item.effect_value, item.duration || 60);
   }
 }
 
@@ -323,19 +417,16 @@ function initializeAICompanies() {
   if (count > 0) return;
 
   const companies = [
-    // Real mode companies
-    { id: uuidv4(), name: 'TransEuropa', drive_mode: 'real', skill_level: 2, balance: 50000, driver_count: 3, truck_count: 3 },
-    { id: uuidv4(), name: 'Nordic Freight', drive_mode: 'real', skill_level: 3, balance: 80000, driver_count: 5, truck_count: 4 },
-    { id: uuidv4(), name: 'Alpine Transport', drive_mode: 'real', skill_level: 1, balance: 15000, driver_count: 1, truck_count: 1 },
-    { id: uuidv4(), name: 'Baltic Logistics', drive_mode: 'real', skill_level: 2, balance: 35000, driver_count: 2, truck_count: 2 },
+    { id: uuidv4(), name: 'TransEuropa',        drive_mode: 'real', skill_level: 2, balance: 50000, driver_count: 3, truck_count: 3 },
+    { id: uuidv4(), name: 'Nordic Freight',      drive_mode: 'real', skill_level: 3, balance: 80000, driver_count: 5, truck_count: 4 },
+    { id: uuidv4(), name: 'Alpine Transport',    drive_mode: 'real', skill_level: 1, balance: 15000, driver_count: 1, truck_count: 1 },
+    { id: uuidv4(), name: 'Baltic Logistics',    drive_mode: 'real', skill_level: 2, balance: 35000, driver_count: 2, truck_count: 2 },
     { id: uuidv4(), name: 'Mediterranean Cargo', drive_mode: 'real', skill_level: 1, balance: 20000, driver_count: 2, truck_count: 1 },
-    
-    // Race mode companies
-    { id: uuidv4(), name: 'Speed Demons', drive_mode: 'race', skill_level: 3, balance: 60000, driver_count: 4, truck_count: 3 },
-    { id: uuidv4(), name: 'Turbo Truckers', drive_mode: 'race', skill_level: 2, balance: 40000, driver_count: 3, truck_count: 2 },
-    { id: uuidv4(), name: 'Highway Kings', drive_mode: 'race', skill_level: 2, balance: 45000, driver_count: 3, truck_count: 3 },
-    { id: uuidv4(), name: 'Nitro Express', drive_mode: 'race', skill_level: 1, balance: 18000, driver_count: 1, truck_count: 1 },
-    { id: uuidv4(), name: 'Thunder Road', drive_mode: 'race', skill_level: 3, balance: 75000, driver_count: 4, truck_count: 4 },
+    { id: uuidv4(), name: 'Speed Demons',        drive_mode: 'race', skill_level: 3, balance: 60000, driver_count: 4, truck_count: 3 },
+    { id: uuidv4(), name: 'Turbo Truckers',      drive_mode: 'race', skill_level: 2, balance: 40000, driver_count: 3, truck_count: 2 },
+    { id: uuidv4(), name: 'Highway Kings',       drive_mode: 'race', skill_level: 2, balance: 45000, driver_count: 3, truck_count: 3 },
+    { id: uuidv4(), name: 'Nitro Express',       drive_mode: 'race', skill_level: 1, balance: 18000, driver_count: 1, truck_count: 1 },
+    { id: uuidv4(), name: 'Thunder Road',        drive_mode: 'race', skill_level: 3, balance: 75000, driver_count: 4, truck_count: 4 },
   ];
 
   for (const company of companies) {
@@ -351,14 +442,14 @@ function initializeTrucks() {
   if (count > 0) return;
 
   const trucks = [
-    { id: uuidv4(), name: 'Volvo FH16', model: 'volvo_fh16', price: 95000, fuel_efficiency: 0.95, max_speed: 90, comfort: 3 },
-    { id: uuidv4(), name: 'Scania R730', model: 'scania_r730', price: 120000, fuel_efficiency: 0.90, max_speed: 95, comfort: 4 },
-    { id: uuidv4(), name: 'Mercedes Actros', model: 'mercedes_actros', price: 85000, fuel_efficiency: 1.0, max_speed: 90, comfort: 3 },
-    { id: uuidv4(), name: 'MAN TGX', model: 'man_tgx', price: 75000, fuel_efficiency: 1.05, max_speed: 88, comfort: 2 },
-    { id: uuidv4(), name: 'DAF XF', model: 'daf_xf', price: 70000, fuel_efficiency: 1.0, max_speed: 90, comfort: 2 },
-    { id: uuidv4(), name: 'Renault T', model: 'renault_t', price: 65000, fuel_efficiency: 1.1, max_speed: 85, comfort: 2 },
-    { id: uuidv4(), name: 'Iveco S-Way', model: 'iveco_sway', price: 60000, fuel_efficiency: 1.15, max_speed: 85, comfort: 1 },
-    { id: uuidv4(), name: 'Volvo FH (Entrée)', model: 'volvo_fh_entry', price: 45000, fuel_efficiency: 1.2, max_speed: 85, comfort: 1 },
+    { id: uuidv4(), name: 'Volvo FH16',       model: 'volvo_fh16',      price: 95000,  fuel_efficiency: 0.95, max_speed: 90, comfort: 3 },
+    { id: uuidv4(), name: 'Scania R730',       model: 'scania_r730',     price: 120000, fuel_efficiency: 0.90, max_speed: 95, comfort: 4 },
+    { id: uuidv4(), name: 'Mercedes Actros',   model: 'mercedes_actros', price: 85000,  fuel_efficiency: 1.0,  max_speed: 90, comfort: 3 },
+    { id: uuidv4(), name: 'MAN TGX',           model: 'man_tgx',         price: 75000,  fuel_efficiency: 1.05, max_speed: 88, comfort: 2 },
+    { id: uuidv4(), name: 'DAF XF',            model: 'daf_xf',          price: 70000,  fuel_efficiency: 1.0,  max_speed: 90, comfort: 2 },
+    { id: uuidv4(), name: 'Renault T',         model: 'renault_t',       price: 65000,  fuel_efficiency: 1.1,  max_speed: 85, comfort: 2 },
+    { id: uuidv4(), name: 'Iveco S-Way',       model: 'iveco_sway',      price: 60000,  fuel_efficiency: 1.15, max_speed: 85, comfort: 1 },
+    { id: uuidv4(), name: 'Volvo FH Entree',   model: 'volvo_fh_entry',  price: 45000,  fuel_efficiency: 1.2,  max_speed: 85, comfort: 1 },
   ];
 
   for (const truck of trucks) {
@@ -373,27 +464,22 @@ function resetMonthlyKm() {
   db.prepare('UPDATE company SET monthly_km_real = 0, monthly_km_race = 0').run();
   db.prepare('UPDATE drivers SET monthly_km_real = 0, monthly_km_race = 0').run();
   db.prepare('UPDATE ai_companies SET monthly_km_real = 0, monthly_km_race = 0').run();
-  
-  // Redistribute AI modes (50/50 balanced)
   redistributeAIModes();
 }
 
 function redistributeAIModes() {
   const companies = db.prepare('SELECT id FROM ai_companies').all();
   if (companies.length === 0) return;
-  
-  // Shuffle the companies randomly
+
   const shuffled = companies.sort(() => Math.random() - 0.5);
-  
-  // Half real, half race (balanced)
   const halfPoint = Math.ceil(shuffled.length / 2);
-  
+
   for (let i = 0; i < shuffled.length; i++) {
     const newMode = i < halfPoint ? 'real' : 'race';
     db.prepare('UPDATE ai_companies SET drive_mode = ? WHERE id = ?').run(newMode, shuffled[i].id);
   }
-  
-  console.log(`🔄 AI modes redistributed: ${halfPoint} real, ${shuffled.length - halfPoint} race`);
+
+  console.log(`AI modes redistributed: ${halfPoint} real, ${shuffled.length - halfPoint} race`);
 }
 
 module.exports = {

@@ -5,7 +5,6 @@ const { db } = require('../database');
 // Get real mode rankings
 router.get('/real', (req, res) => {
   try {
-    // Get AI companies in real mode only
     const aiCompanies = db.prepare(`
       SELECT id, name, logo, monthly_km_real as monthly_km, total_km_real as total_km, 
              driver_count, truck_count, 'ai' as type
@@ -13,17 +12,15 @@ router.get('/real', (req, res) => {
       WHERE drive_mode = 'real'
       ORDER BY monthly_km_real DESC
     `).all();
-    
-    // Get player company (use company km directly - includes player's own km + drivers)
+
     const company = db.prepare('SELECT * FROM company WHERE id = 1').get();
     const driverCount = db.prepare('SELECT COUNT(*) as count FROM drivers WHERE is_active = 1').get().count;
     const truckCount = db.prepare('SELECT COUNT(*) as count FROM trucks WHERE owned = 1').get().count;
-    
-    // Only include player if they are in real mode
+
     let allCompanies = [...aiCompanies];
-    
+
     if (company.drive_mode === 'real') {
-      const playerEntry = {
+      allCompanies.push({
         id: 'player',
         name: company.name,
         logo: company.logo,
@@ -32,18 +29,12 @@ router.get('/real', (req, res) => {
         driver_count: driverCount,
         truck_count: truckCount,
         type: 'player'
-      };
-      allCompanies.push(playerEntry);
+      });
     }
-    
-    // Sort by monthly km
+
     allCompanies.sort((a, b) => b.monthly_km - a.monthly_km);
-    
-    // Add rank
-    allCompanies.forEach((c, i) => {
-      c.rank = i + 1;
-    });
-    
+    allCompanies.forEach((c, i) => { c.rank = i + 1; });
+
     res.json({
       rankings: allCompanies,
       player_rank: allCompanies.findIndex(c => c.type === 'player') + 1,
@@ -57,7 +48,6 @@ router.get('/real', (req, res) => {
 // Get race mode rankings
 router.get('/race', (req, res) => {
   try {
-    // Get AI companies in race mode only
     const aiCompanies = db.prepare(`
       SELECT id, name, logo, monthly_km_race as monthly_km, total_km_race as total_km,
              driver_count, truck_count, 'ai' as type
@@ -65,17 +55,15 @@ router.get('/race', (req, res) => {
       WHERE drive_mode = 'race'
       ORDER BY monthly_km_race DESC
     `).all();
-    
-    // Get player company (use company km directly - includes player's own km + drivers)
+
     const company = db.prepare('SELECT * FROM company WHERE id = 1').get();
     const driverCount = db.prepare('SELECT COUNT(*) as count FROM drivers WHERE is_active = 1').get().count;
     const truckCount = db.prepare('SELECT COUNT(*) as count FROM trucks WHERE owned = 1').get().count;
-    
-    // Only include player if they are in race mode
+
     let allCompanies = [...aiCompanies];
-    
+
     if (company.drive_mode === 'race') {
-      const playerEntry = {
+      allCompanies.push({
         id: 'player',
         name: company.name,
         logo: company.logo,
@@ -84,18 +72,12 @@ router.get('/race', (req, res) => {
         driver_count: driverCount,
         truck_count: truckCount,
         type: 'player'
-      };
-      allCompanies.push(playerEntry);
+      });
     }
-    
-    // Sort by monthly km
+
     allCompanies.sort((a, b) => b.monthly_km - a.monthly_km);
-    
-    // Add rank
-    allCompanies.forEach((c, i) => {
-      c.rank = i + 1;
-    });
-    
+    allCompanies.forEach((c, i) => { c.rank = i + 1; });
+
     res.json({
       rankings: allCompanies,
       player_rank: allCompanies.findIndex(c => c.type === 'player') + 1,
@@ -106,32 +88,111 @@ router.get('/race', (req, res) => {
   }
 });
 
+// Get drivers ranking
+router.get('/drivers', (req, res) => {
+  try {
+    const company = db.prepare('SELECT * FROM company WHERE id = 1').get();
+    const isRealMode = company.drive_mode === 'real';
+
+    const drivers = db.prepare(`
+      SELECT 
+        id, name, avatar,
+        monthly_km_real, monthly_km_race,
+        total_km_real, total_km_race,
+        training_driving, training_eco, training_endurance,
+        'employee' as type
+      FROM drivers
+      WHERE is_active = 1
+    `).all();
+
+    const now = new Date();
+    const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+
+    const playerMonthlyKm = db.prepare(`
+      SELECT 
+        COALESCE(SUM(km_real), 0) as km_real,
+        COALESCE(SUM(km_race), 0) as km_race,
+        COALESCE(SUM(distance_km), 0) as distance_km
+      FROM deliveries
+      WHERE (driver_id IS NULL OR driver_id = '')
+        AND delivered_at >= ?
+    `).get(firstDayOfMonth);
+
+    const playerTotalKm = db.prepare(`
+      SELECT 
+        COALESCE(SUM(km_real), 0) as km_real,
+        COALESCE(SUM(km_race), 0) as km_race,
+        COALESCE(SUM(distance_km), 0) as distance_km
+      FROM deliveries
+      WHERE (driver_id IS NULL OR driver_id = '')
+    `).get();
+
+    // Le patron apparaît toujours avec ses km de livraisons manuelles
+    const playerDriver = {
+      id: 'player',
+      name: 'Le Patron',
+      avatar: '👑',
+      monthly_km_real: playerMonthlyKm.km_real || playerMonthlyKm.distance_km || 0,
+      monthly_km_race: playerMonthlyKm.km_race || 0,
+      total_km_real: playerTotalKm.km_real || playerTotalKm.distance_km || 0,
+      total_km_race: playerTotalKm.km_race || 0,
+      training_driving: 100,
+      training_eco: 100,
+      training_endurance: 100,
+      type: 'player'
+    };
+
+    const allDrivers = [playerDriver, ...drivers];
+
+    allDrivers.sort((a, b) => {
+      const kmA = isRealMode ? a.monthly_km_real : a.monthly_km_race;
+      const kmB = isRealMode ? b.monthly_km_real : b.monthly_km_race;
+      return kmB - kmA;
+    });
+
+    const rankedDrivers = allDrivers.map((d, i) => ({
+      ...d,
+      rank: i + 1,
+      monthly_km: isRealMode ? d.monthly_km_real : d.monthly_km_race,
+      total_km: isRealMode ? d.total_km_real : d.total_km_race
+    }));
+
+    res.json({
+      drivers: rankedDrivers,
+      mode: company.drive_mode,
+      total: rankedDrivers.length
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Get combined overview
 router.get('/overview', (req, res) => {
   try {
-    // Get player company
     const company = db.prepare('SELECT * FROM company WHERE id = 1').get();
-    const playerReal = { name: company.name, km: company.monthly_km_real || 0, type: 'player' };
-    const playerRace = { name: company.name, km: company.monthly_km_race || 0, type: 'player' };
-    
-    // Get AI companies for real mode
+
+    // FIX: filtrer les IA par mode pour éviter que les IA race apparaissent dans le top real avec 0 km
     const aiReal = db.prepare(`
-      SELECT name, monthly_km_real as km, 'ai' as type FROM ai_companies
+      SELECT name, monthly_km_real as km, 'ai' as type 
+      FROM ai_companies
+      WHERE drive_mode = 'real'
       ORDER BY monthly_km_real DESC
     `).all();
-    
-    // Get AI companies for race mode
+
     const aiRace = db.prepare(`
-      SELECT name, monthly_km_race as km, 'ai' as type FROM ai_companies
+      SELECT name, monthly_km_race as km, 'ai' as type 
+      FROM ai_companies
+      WHERE drive_mode = 'race'
       ORDER BY monthly_km_race DESC
     `).all();
-    
-    // Combine and sort for real mode, take top 3
+
+    const playerReal = { name: company.name, km: company.monthly_km_real || 0, type: 'player' };
+    const playerRace = { name: company.name, km: company.monthly_km_race || 0, type: 'player' };
+
     const allReal = [...aiReal, playerReal].sort((a, b) => b.km - a.km).slice(0, 3);
-    
-    // Combine and sort for race mode, take top 3
     const allRace = [...aiRace, playerRace].sort((a, b) => b.km - a.km).slice(0, 3);
-    
+
     res.json({
       top3_real: allReal,
       top3_race: allRace,

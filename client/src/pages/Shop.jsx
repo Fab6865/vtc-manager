@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react'
-import { getShopItems, buyDecoration, buyGarageUpgrade, getGarage } from '../api'
-import { ShoppingBag, GraduationCap, Truck, Warehouse, Sparkles, Check } from 'lucide-react'
+import { getShopItems, buyDecoration, buyGarageUpgrade, getGarage, buyBooster, getActiveBoosters } from '../api'
+import { ShoppingBag, GraduationCap, Truck, Warehouse, Sparkles, Check, Zap, Clock } from 'lucide-react'
 
 const CATEGORY_INFO = {
+  booster: { icon: Zap, label: 'Boosters KM', color: 'yellow' },
   training: { icon: GraduationCap, label: 'Formations', color: 'primary' },
   truck_upgrade: { icon: Truck, label: 'Équipements camion', color: 'accent' },
   garage_deco: { icon: Sparkles, label: 'Décorations garage', color: 'purple' },
@@ -12,8 +13,9 @@ const CATEGORY_INFO = {
 export default function Shop() {
   const [items, setItems] = useState({})
   const [garage, setGarage] = useState(null)
+  const [activeBoosters, setActiveBoosters] = useState({ boosters: [], total_boost: 0 })
   const [loading, setLoading] = useState(true)
-  const [activeCategory, setActiveCategory] = useState('training')
+  const [activeCategory, setActiveCategory] = useState('booster')
 
   useEffect(() => {
     loadData()
@@ -21,16 +23,28 @@ export default function Shop() {
 
   async function loadData() {
     try {
-      const [shopData, garageData] = await Promise.all([
+      const [shopData, garageData, boostersData] = await Promise.all([
         getShopItems(),
-        getGarage()
+        getGarage(),
+        getActiveBoosters()
       ])
       setItems(shopData)
       setGarage(garageData)
+      setActiveBoosters(boostersData)
     } catch (error) {
       console.error('Error loading shop:', error)
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function handleBuyBooster(itemId) {
+    try {
+      await buyBooster(itemId)
+      alert('🚀 Booster activé!')
+      await loadData()
+    } catch (error) {
+      alert(error.message)
     }
   }
 
@@ -68,6 +82,36 @@ export default function Shop() {
         <ShoppingBag className="w-8 h-8 text-primary-500" />
         Boutique
       </h1>
+
+      {/* Active boosters banner */}
+      {activeBoosters.boosters?.length > 0 && (
+        <div className="bg-gradient-to-r from-yellow-900/50 to-orange-900/50 rounded-xl p-4 border border-yellow-600/50">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <Zap className="w-6 h-6 text-yellow-500" />
+              <div>
+                <p className="font-semibold text-yellow-400">Boosters actifs: +{activeBoosters.total_boost}% km</p>
+                <div className="flex flex-wrap gap-2 mt-1">
+                  {activeBoosters.boosters.map((b) => {
+                    const expiresAt = new Date(b.expires_at)
+                    const now = new Date()
+                    const remainingMs = expiresAt - now
+                    const remainingMin = Math.max(0, Math.floor(remainingMs / 60000))
+                    const hours = Math.floor(remainingMin / 60)
+                    const mins = remainingMin % 60
+                    return (
+                      <span key={b.id} className="bg-yellow-600/30 text-yellow-300 text-xs px-2 py-1 rounded flex items-center gap-1">
+                        <Clock className="w-3 h-3" />
+                        {b.booster_name}: {hours > 0 ? `${hours}h${mins}m` : `${mins}m`}
+                      </span>
+                    )
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Category tabs */}
       <div className="flex flex-wrap gap-2">
@@ -115,15 +159,20 @@ export default function Shop() {
                 <div className="bg-dark-700 rounded-lg px-3 py-2 mb-4 text-sm">
                   <span className="text-dark-400">Effet: </span>
                   <span className="text-primary-400">
+                    {item.effect_type === 'km_boost' && `+${item.effect_value}% km`}
                     {item.effect_type === 'driving' && `+${item.effect_value}% km/jour`}
-                    {item.effect_type === 'eco' && `-${item.effect_value}% carburant`}
                     {item.effect_type === 'endurance' && `+${item.effect_value}% endurance`}
                     {item.effect_type === 'adr' && `+${item.effect_value}% revenus ADR`}
-                    {item.effect_type === 'fuel' && `-${item.effect_value}% carburant`}
                     {item.effect_type === 'comfort' && `+${item.effect_value}% confort`}
                     {item.effect_type === 'morale' && `+${item.effect_value}% moral`}
                     {item.effect_type === 'capacity' && `+${item.effect_value} places`}
                     {item.effect_type === 'repair' && `-${item.effect_value}% réparations`}
+                    {item.effect_type === 'navigation' && `+${item.effect_value}% km`}
+                    {item.effect_type === 'speed' && `+${item.effect_value}% vitesse`}
+                    {item.effect_type === 'night' && `+${item.effect_value}% nuit`}
+                    {item.effect_type === 'special' && `Accès spécial`}
+                    {item.effect_type === 'management' && `+${item.effect_value}% gestion`}
+                    {item.effect_type === 'security' && `Protection`}
                   </span>
                 </div>
               )}
@@ -131,7 +180,15 @@ export default function Shop() {
               <div className="flex items-center justify-between">
                 <span className="text-xl font-bold text-green-500">{item.price.toLocaleString()}€</span>
                 
-                {activeCategory === 'training' ? (
+                {activeCategory === 'booster' ? (
+                  <button
+                    onClick={() => handleBuyBooster(item.id)}
+                    className="bg-yellow-600 hover:bg-yellow-700 px-4 py-2 rounded-lg transition-colors text-sm flex items-center gap-2"
+                  >
+                    <Zap className="w-4 h-4" />
+                    Activer
+                  </button>
+                ) : activeCategory === 'training' ? (
                   <p className="text-dark-500 text-sm">Achetez via Chauffeurs</p>
                 ) : activeCategory === 'truck_upgrade' ? (
                   <p className="text-dark-500 text-sm">Achetez via Garage</p>

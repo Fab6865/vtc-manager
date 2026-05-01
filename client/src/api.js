@@ -49,6 +49,7 @@ export const getDeliveryStats = () => fetchApi('/deliveries/stats');
 export const getRealRankings = () => fetchApi('/rankings/real');
 export const getRaceRankings = () => fetchApi('/rankings/race');
 export const getRankingsOverview = () => fetchApi('/rankings/overview');
+export const getDriversRanking = () => fetchApi('/rankings/drivers');
 
 // Gallery
 export const getGallery = () => fetchApi('/gallery');
@@ -80,3 +81,12 @@ export const adminToggleFreeHiring = () => fetchApi('/admin/free-hiring', { meth
 export const adminGetTrucks = () => fetchApi('/admin/trucks');
 export const adminCreateTruck = (data) => fetchApi('/admin/truck', { method: 'POST', body: JSON.stringify(data) });
 export const adminDeleteTruck = (id) => fetchApi(`/admin/truck/${id}`, { method: 'DELETE' });
+
+// Admin Settings (Paramètres IA)
+export const adminGetSettings = () => fetchApi('/admin/settings');
+export const adminUpdateSettings = (settings) => fetchApi('/admin/settings', { method: 'PUT', body: JSON.stringify(settings) });
+export const adminUpdateSetting = (key, value) => fetchApi(`/admin/settings/${key}`, { method: 'PUT', body: JSON.stringify({ value }) });
+
+// Boosters
+export const buyBooster = (itemId) => fetchApi(`/shop/buy/booster/${itemId}`, { method: 'POST' });
+export const getActiveBoosters = () => fetchApi('/shop/boosters/active');

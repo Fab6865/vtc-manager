@@ -18,9 +18,11 @@ import {
   adminGetTrucks,
   adminCreateTruck,
   adminDeleteTruck,
+  adminGetSettings,
+  adminUpdateSettings,
   getCompany
 } from '../api'
-import { Settings, DollarSign, Clock, RotateCcw, Unlock, Zap, Building2, Trash2, Plus } from 'lucide-react'
+import { Settings, DollarSign, Clock, RotateCcw, Unlock, Zap, Building2, Trash2, Plus, Sliders } from 'lucide-react'
 
 export default function Admin() {
   const [company, setCompany] = useState(null)
@@ -37,6 +39,7 @@ export default function Admin() {
   const [trucks, setTrucks] = useState([])
   const [newTruckName, setNewTruckName] = useState('')
   const [newTruckPrice, setNewTruckPrice] = useState(50000)
+  const [settings, setSettings] = useState({})
 
   useEffect(() => {
     loadData()
@@ -44,16 +47,18 @@ export default function Admin() {
 
   async function loadData() {
     try {
-      const [companyData, aiData, freeHiringData, trucksData] = await Promise.all([
+      const [companyData, aiData, freeHiringData, trucksData, settingsData] = await Promise.all([
         getCompany(),
         adminGetAICompanies(),
         adminGetFreeHiring(),
-        adminGetTrucks()
+        adminGetTrucks(),
+        adminGetSettings()
       ])
       setCompany(companyData)
       setAICompanies(aiData)
       setFreeHiring(freeHiringData.enabled)
       setTrucks(trucksData)
+      setSettings(settingsData)
     } catch (error) {
       console.error('Error loading admin data:', error)
     } finally {
@@ -209,6 +214,27 @@ export default function Admin() {
     if (!confirm('Supprimer ce camion ?')) return
     try {
       await adminDeleteTruck(id)
+      await loadData()
+    } catch (error) {
+      alert(error.message)
+    }
+  }
+
+  function handleSettingChange(key, value) {
+    setSettings(prev => ({
+      ...prev,
+      [key]: { ...prev[key], value }
+    }))
+  }
+
+  async function handleSaveSettings() {
+    try {
+      const settingsToSave = {}
+      for (const [key, data] of Object.entries(settings)) {
+        settingsToSave[key] = data.value
+      }
+      await adminUpdateSettings(settingsToSave)
+      alert('✅ Paramètres sauvegardés!')
       await loadData()
     } catch (error) {
       alert(error.message)
@@ -449,6 +475,145 @@ export default function Admin() {
               ))}
             </tbody>
           </table>
+        </div>
+      </div>
+
+      {/* AI Settings / Paramètres IA */}
+      <div className="bg-dark-800 rounded-xl p-6 border border-dark-700">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold flex items-center gap-2">
+            <Sliders className="w-5 h-5 text-purple-500" />
+            Paramètres IA (Équilibrage)
+          </h2>
+          <button 
+            onClick={handleSaveSettings}
+            className="bg-green-600 hover:bg-green-700 px-4 py-2 rounded-lg"
+          >
+            💾 Sauvegarder
+          </button>
+        </div>
+        
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {/* AI Km Multiplier */}
+          <div className="bg-dark-700 rounded-lg p-4">
+            <label className="block text-dark-400 text-sm mb-1">Multiplicateur km IA</label>
+            <input
+              type="number"
+              step="0.1"
+              value={settings.ai_km_multiplier?.value || '1.5'}
+              onChange={(e) => handleSettingChange('ai_km_multiplier', e.target.value)}
+              className="w-full bg-dark-600 border border-dark-500 rounded-lg px-3 py-2"
+            />
+            <p className="text-dark-500 text-xs mt-1">Actuellement: x{settings.ai_km_multiplier?.value || '1.5'}</p>
+          </div>
+
+          {/* Player Km Multiplier */}
+          <div className="bg-dark-700 rounded-lg p-4">
+            <label className="block text-dark-400 text-sm mb-1">Multiplicateur km Joueur</label>
+            <input
+              type="number"
+              step="0.1"
+              value={settings.player_km_multiplier?.value || '1.0'}
+              onChange={(e) => handleSettingChange('player_km_multiplier', e.target.value)}
+              className="w-full bg-dark-600 border border-dark-500 rounded-lg px-3 py-2"
+            />
+            <p className="text-dark-500 text-xs mt-1">Actuellement: x{settings.player_km_multiplier?.value || '1.0'}</p>
+          </div>
+
+          {/* Break Probability */}
+          <div className="bg-dark-700 rounded-lg p-4">
+            <label className="block text-dark-400 text-sm mb-1">Probabilité pause</label>
+            <input
+              type="number"
+              step="0.01"
+              min="0"
+              max="1"
+              value={settings.ai_break_probability?.value || '0.15'}
+              onChange={(e) => handleSettingChange('ai_break_probability', e.target.value)}
+              className="w-full bg-dark-600 border border-dark-500 rounded-lg px-3 py-2"
+            />
+            <p className="text-dark-500 text-xs mt-1">{((parseFloat(settings.ai_break_probability?.value) || 0.15) * 100).toFixed(0)}% chance de pause/tick</p>
+          </div>
+
+          {/* Active Hours Start */}
+          <div className="bg-dark-700 rounded-lg p-4">
+            <label className="block text-dark-400 text-sm mb-1">Heure début activité</label>
+            <input
+              type="number"
+              min="0"
+              max="23"
+              value={settings.ai_active_hours_start?.value || '6'}
+              onChange={(e) => handleSettingChange('ai_active_hours_start', e.target.value)}
+              className="w-full bg-dark-600 border border-dark-500 rounded-lg px-3 py-2"
+            />
+            <p className="text-dark-500 text-xs mt-1">{settings.ai_active_hours_start?.value || '6'}h du matin</p>
+          </div>
+
+          {/* Active Hours End */}
+          <div className="bg-dark-700 rounded-lg p-4">
+            <label className="block text-dark-400 text-sm mb-1">Heure fin activité</label>
+            <input
+              type="number"
+              min="0"
+              max="24"
+              value={settings.ai_active_hours_end?.value || '22'}
+              onChange={(e) => handleSettingChange('ai_active_hours_end', e.target.value)}
+              className="w-full bg-dark-600 border border-dark-500 rounded-lg px-3 py-2"
+            />
+            <p className="text-dark-500 text-xs mt-1">{settings.ai_active_hours_end?.value || '22'}h le soir</p>
+          </div>
+
+          {/* Revenue per km Real */}
+          <div className="bg-dark-700 rounded-lg p-4">
+            <label className="block text-dark-400 text-sm mb-1">Revenu/km (Réel)</label>
+            <input
+              type="number"
+              step="0.1"
+              value={settings.revenue_per_km_real?.value || '1.20'}
+              onChange={(e) => handleSettingChange('revenue_per_km_real', e.target.value)}
+              className="w-full bg-dark-600 border border-dark-500 rounded-lg px-3 py-2"
+            />
+            <p className="text-dark-500 text-xs mt-1">{settings.revenue_per_km_real?.value || '1.20'}€/km</p>
+          </div>
+
+          {/* Revenue per km Race */}
+          <div className="bg-dark-700 rounded-lg p-4">
+            <label className="block text-dark-400 text-sm mb-1">Revenu/km (Course)</label>
+            <input
+              type="number"
+              step="0.1"
+              value={settings.revenue_per_km_race?.value || '0.80'}
+              onChange={(e) => handleSettingChange('revenue_per_km_race', e.target.value)}
+              className="w-full bg-dark-600 border border-dark-500 rounded-lg px-3 py-2"
+            />
+            <p className="text-dark-500 text-xs mt-1">{settings.revenue_per_km_race?.value || '0.80'}€/km</p>
+          </div>
+
+          {/* Base km per min Real */}
+          <div className="bg-dark-700 rounded-lg p-4">
+            <label className="block text-dark-400 text-sm mb-1">Km base/min (Réel)</label>
+            <input
+              type="number"
+              step="0.1"
+              value={settings.base_km_per_min_real?.value || '1.2'}
+              onChange={(e) => handleSettingChange('base_km_per_min_real', e.target.value)}
+              className="w-full bg-dark-600 border border-dark-500 rounded-lg px-3 py-2"
+            />
+            <p className="text-dark-500 text-xs mt-1">{settings.base_km_per_min_real?.value || '1.2'} km/min</p>
+          </div>
+
+          {/* Base km per min Race */}
+          <div className="bg-dark-700 rounded-lg p-4">
+            <label className="block text-dark-400 text-sm mb-1">Km base/min (Course)</label>
+            <input
+              type="number"
+              step="0.1"
+              value={settings.base_km_per_min_race?.value || '2.2'}
+              onChange={(e) => handleSettingChange('base_km_per_min_race', e.target.value)}
+              className="w-full bg-dark-600 border border-dark-500 rounded-lg px-3 py-2"
+            />
+            <p className="text-dark-500 text-xs mt-1">{settings.base_km_per_min_race?.value || '2.2'} km/min</p>
+          </div>
         </div>
       </div>
 

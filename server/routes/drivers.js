@@ -45,25 +45,23 @@ router.post('/hire', (req, res) => {
   try {
     const company = db.prepare('SELECT balance FROM company WHERE id = 1').get();
     const hireCost = 500;
-    
-    // Check if free hiring is enabled or if player has enough money
+
     if (!isFreeHiringEnabled() && company.balance < hireCost) {
       return res.status(400).json({ error: 'Solde insuffisant pour embaucher (500€ requis)' });
     }
-    
+
     const name = req.body.name || generateDriverName();
     const id = uuidv4();
-    
+
     db.prepare(`
       INSERT INTO drivers (id, name, skill_level)
       VALUES (?, ?, 1)
     `).run(id, name);
-    
-    // Only deduct cost if free hiring is disabled
+
     if (!isFreeHiringEnabled()) {
       db.prepare('UPDATE company SET balance = balance - ? WHERE id = 1').run(hireCost);
     }
-    
+
     const driver = db.prepare('SELECT * FROM drivers WHERE id = ?').get(id);
     res.json(driver);
   } catch (error) {
@@ -75,13 +73,13 @@ router.post('/hire', (req, res) => {
 router.delete('/:id', (req, res) => {
   try {
     const { id } = req.params;
-    
+
     // Unassign from truck
     db.prepare('UPDATE trucks SET assigned_driver_id = NULL WHERE assigned_driver_id = ?').run(id);
-    
+
     // Mark as inactive (keep history)
     db.prepare('UPDATE drivers SET is_active = 0 WHERE id = ?').run(id);
-    
+
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -93,42 +91,49 @@ router.post('/:id/train', (req, res) => {
   try {
     const { id } = req.params;
     const { training_type } = req.body;
-    
+
     const company = db.prepare('SELECT balance FROM company WHERE id = 1').get();
     const driver = db.prepare('SELECT * FROM drivers WHERE id = ?').get(id);
-    
+
     if (!driver) {
       return res.status(404).json({ error: 'Chauffeur non trouvé' });
     }
-    
+
     const trainingCosts = {
       driving: 500,
       eco: 800,
       endurance: 1200,
       adr: 2000
     };
-    
+
     const cost = trainingCosts[training_type];
     if (!cost) {
       return res.status(400).json({ error: 'Type de formation invalide' });
     }
-    
+
     if (company.balance < cost) {
       return res.status(400).json({ error: `Solde insuffisant (${cost}€ requis)` });
     }
-    
-    const column = `training_${training_type}`;
+
+    // FIX: mapping correct des colonnes — certification_adr au lieu de training_adr
+    const columnMap = {
+      driving: 'training_driving',
+      eco: 'training_eco',
+      endurance: 'training_endurance',
+      adr: 'certification_adr'
+    };
+    const column = columnMap[training_type];
     const currentLevel = driver[column] || 0;
-    
+
     if (currentLevel >= 100) {
       return res.status(400).json({ error: 'Formation déjà au maximum' });
     }
-    
+
     const increment = training_type === 'adr' ? 1 : 5;
-    
+
     db.prepare(`UPDATE drivers SET ${column} = ${column} + ? WHERE id = ?`).run(increment, id);
     db.prepare('UPDATE company SET balance = balance - ? WHERE id = 1').run(cost);
-    
+
     const updatedDriver = db.prepare('SELECT * FROM drivers WHERE id = ?').get(id);
     res.json(updatedDriver);
   } catch (error) {
@@ -141,26 +146,29 @@ router.post('/:id/assign-truck', (req, res) => {
   try {
     const { id } = req.params;
     const { truck_id } = req.body;
-    
-    // Check if truck exists and is owned
-    const truck = db.prepare('SELECT * FROM trucks WHERE id = ? AND owned = 1').get(truck_id);
+
+    // FIX: accepte les camions loués (rented = 1) en plus des camions possédés (owned = 1)
+    const truck = db.prepare('SELECT * FROM trucks WHERE id = ? AND (owned = 1 OR rented = 1)').get(truck_id);
     if (!truck) {
-      return res.status(404).json({ error: 'Camion non trouvé ou non possédé' });
+      return res.status(404).json({ error: 'Camion non trouvé ou non possédé/loué' });
     }
-    
-    // Unassign from previous driver
+
+    // FIX: désassigner l'éventuel ancien chauffeur déjà sur ce camion
+    db.prepare('UPDATE trucks SET assigned_driver_id = NULL WHERE id = ?').run(truck_id);
+
+    // Désassigner ce chauffeur de son ancien camion
     db.prepare('UPDATE trucks SET assigned_driver_id = NULL WHERE assigned_driver_id = ?').run(id);
-    
-    // Assign to new driver
+
+    // Assigner le camion au chauffeur
     db.prepare('UPDATE trucks SET assigned_driver_id = ? WHERE id = ?').run(id, truck_id);
-    
+
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// Get driver stats with detailed history
+// Get driver details
 router.get('/:id', (req, res) => {
   try {
     const { id } = req.params;
@@ -170,11 +178,11 @@ router.get('/:id', (req, res) => {
       LEFT JOIN trucks t ON t.assigned_driver_id = d.id
       WHERE d.id = ?
     `).get(id);
-    
+
     if (!driver) {
       return res.status(404).json({ error: 'Chauffeur non trouvé' });
     }
-    
+
     res.json(driver);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -186,43 +194,37 @@ router.get('/:id/stats', (req, res) => {
   try {
     const { id } = req.params;
     const driver = db.prepare('SELECT * FROM drivers WHERE id = ?').get(id);
-    
+
     if (!driver) {
       return res.status(404).json({ error: 'Chauffeur non trouvé' });
     }
-    
-    // Get deliveries made by this driver
+
     const deliveries = db.prepare(`
       SELECT * FROM deliveries 
       WHERE driver_id = ? 
       ORDER BY delivered_at DESC
       LIMIT 50
     `).all(id);
-    
-    // Calculate stats from deliveries
+
     const totalDeliveries = deliveries.length;
     let totalRevenue = deliveries.reduce((sum, d) => sum + (d.revenue || 0), 0);
     let totalProfit = deliveries.reduce((sum, d) => sum + (d.profit || 0), 0);
-    
-    // If no deliveries but driver has km (AI simulated), estimate finances
-    // Real mode: 1.20€/km revenue, ~0.35€/km profit
-    // Race mode: 0.80€/km revenue, ~0.25€/km profit
+
+    // Si pas de livraisons mais km simulés, estimation financière
     if (totalDeliveries === 0 && (driver.total_km_real > 0 || driver.total_km_race > 0)) {
       totalRevenue = (driver.total_km_real * 1.20) + (driver.total_km_race * 0.80);
       totalProfit = (driver.total_km_real * 0.35) + (driver.total_km_race * 0.25);
     }
-    
+
     const avgProfitPerDelivery = totalDeliveries > 0 ? totalProfit / totalDeliveries : 0;
     const avgKmPerDelivery = totalDeliveries > 0 ? (driver.total_km_real + driver.total_km_race) / totalDeliveries : 0;
-    
-    // Days since hired
+
     const hiredDate = new Date(driver.hired_at);
     const daysSinceHired = Math.floor((Date.now() - hiredDate.getTime()) / (1000 * 60 * 60 * 24));
-    
-    // Calculate efficiency (km per day)
+
     const totalKm = driver.total_km_real + driver.total_km_race;
     const kmPerDay = daysSinceHired > 0 ? totalKm / daysSinceHired : totalKm;
-    
+
     res.json({
       driver,
       stats: {

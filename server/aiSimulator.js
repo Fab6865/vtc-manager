@@ -10,15 +10,30 @@ function logTransaction(type, category, description, amount, driverId = null, tr
   `).run(id, type, category, description, amount, driverId, truckId);
 }
 
-// Get free hiring status from admin routes
+// Get free hiring status and settings from admin routes
 let isFreeHiringEnabled = () => false;
+let getSetting = (key, defaultValue) => defaultValue;
+let getActiveBoostPercentage = () => 0;
 try {
   const adminRoutes = require('./routes/admin');
   if (adminRoutes.isFreeHiringEnabled) {
     isFreeHiringEnabled = adminRoutes.isFreeHiringEnabled;
   }
+  if (adminRoutes.getSetting) {
+    getSetting = adminRoutes.getSetting;
+  }
+  const shopRoutes = require('./routes/shop');
+  if (shopRoutes.getActiveBoostPercentage) {
+    getActiveBoostPercentage = shopRoutes.getActiveBoostPercentage;
+  }
 } catch (e) {
-  // Admin routes not loaded yet, will use default
+  // Routes not loaded yet, will use default
+}
+
+// Helper to get numeric setting
+function getNumericSetting(key, defaultValue) {
+  const val = getSetting(key, String(defaultValue));
+  return parseFloat(val) || defaultValue;
 }
 
 // Global tick counter for timing events
@@ -49,10 +64,12 @@ const CONFIG = {
   }
 };
 
-// Check if current hour is within active driving hours
+// Check if current hour is within active driving hours (uses admin settings)
 function isActiveHour() {
   const hour = new Date().getHours();
-  return hour >= CONFIG.ACTIVE_HOURS_START && hour < CONFIG.ACTIVE_HOURS_END;
+  const start = getNumericSetting('ai_active_hours_start', CONFIG.ACTIVE_HOURS_START);
+  const end = getNumericSetting('ai_active_hours_end', CONFIG.ACTIVE_HOURS_END);
+  return hour >= start && hour < end;
 }
 
 // Check for monthly reset (new month = reset km + redistribute modes)
@@ -99,32 +116,39 @@ function simulateAICompanies() {
     // Get personality config (default to stable if not set)
     const personality = CONFIG.PERSONALITY[company.personality] || CONFIG.PERSONALITY.stable;
     
-    // Check if company is on break (adjusted by personality)
-    const breakChance = CONFIG.BREAK_PROBABILITY + personality.breakBonus;
+    // Check if company is on break (adjusted by personality) - uses admin settings
+    const baseBreakChance = getNumericSetting('ai_break_probability', CONFIG.BREAK_PROBABILITY);
+    const breakChance = baseBreakChance + personality.breakBonus;
     if (Math.random() < breakChance) {
       continue; // This company is on break this tick
     }
     
-    // Check for incidents (affects all drivers)
-    if (Math.random() < CONFIG.INCIDENT_PROBABILITY * company.driver_count) {
-      handleIncident(company);
-      continue; // Skip this tick due to incident
-    }
+    // Incidents IA désactivés pour équilibrage
+    // if (Math.random() < CONFIG.INCIDENT_PROBABILITY * company.driver_count) {
+    //   handleIncident(company);
+    //   continue;
+    // }
     
-    // Base km per minute per driver (scaled by skill)
-    const baseKmPerMin = company.drive_mode === 'real' ? 1.2 : 2.2;
+    // Base km per minute per driver (scaled by skill) - uses admin settings
+    const baseKmReal = getNumericSetting('base_km_per_min_real', 1.2);
+    const baseKmRace = getNumericSetting('base_km_per_min_race', 2.2);
+    const baseKmPerMin = company.drive_mode === 'real' ? baseKmReal : baseKmRace;
     const skillMultiplier = 1 + (company.skill_level - 1) * 0.15;
     
     // Random factor for variability
     const randomFactor = 0.8 + Math.random() * 0.6;
     
-    // Total km this tick
-    const kmThisTick = baseKmPerMin * skillMultiplier * randomFactor * company.driver_count * 1.5;
+    // AI km multiplier from admin settings
+    const aiKmMultiplier = getNumericSetting('ai_km_multiplier', 1.5);
     
-    // Revenue calculation
-    const revenuePerKm = company.drive_mode === 'real' ? 1.20 : 0.80;
-    const costPerKm = 0.35; // fuel + wear
-    const profit = kmThisTick * (revenuePerKm - costPerKm);
+    // Total km this tick
+    const kmThisTick = baseKmPerMin * skillMultiplier * randomFactor * company.driver_count * aiKmMultiplier;
+    
+    // Revenue calculation (sans coûts carburant/usure) - uses admin settings
+    const revenueReal = getNumericSetting('revenue_per_km_real', 1.20);
+    const revenueRace = getNumericSetting('revenue_per_km_race', 0.80);
+    const revenuePerKm = company.drive_mode === 'real' ? revenueReal : revenueRace;
+    const profit = kmThisTick * revenuePerKm;
     
     // Update company stats
     if (company.drive_mode === 'real') {
@@ -224,8 +248,9 @@ function simulatePlayerDrivers() {
   const drivers = db.prepare('SELECT * FROM drivers WHERE is_active = 1').all();
   
   for (const driver of drivers) {
-    // Check if driver is on break (15% chance per tick)
-    if (Math.random() < CONFIG.BREAK_PROBABILITY) {
+    // Check if driver is on break - uses admin settings
+    const breakChance = getNumericSetting('ai_break_probability', CONFIG.BREAK_PROBABILITY);
+    if (Math.random() < breakChance) {
       continue; // Driver is on break this tick
     }
     
@@ -233,8 +258,10 @@ function simulatePlayerDrivers() {
     const truck = db.prepare('SELECT * FROM trucks WHERE assigned_driver_id = ? AND owned = 1').get(driver.id);
     if (!truck) continue; // No truck, can't drive
     
-    // Base km per minute (increased for longer deliveries)
-    const baseKmPerMin = company.drive_mode === 'real' ? 1.2 : 2.2;
+    // Base km per minute - uses admin settings
+    const baseKmReal = getNumericSetting('base_km_per_min_real', 1.2);
+    const baseKmRace = getNumericSetting('base_km_per_min_race', 2.2);
+    const baseKmPerMin = company.drive_mode === 'real' ? baseKmReal : baseKmRace;
     
     // Skill multiplier from training
     const drivingBonus = 1 + (driver.training_driving * 0.01);
@@ -246,18 +273,21 @@ function simulatePlayerDrivers() {
     // Random factor
     const randomFactor = 0.7 + Math.random() * 0.6;
     
-    // Total km this tick
-    const kmThisTick = baseKmPerMin * drivingBonus * enduranceBonus * truckSpeedBonus * randomFactor;
+    // Player km multiplier from admin settings
+    const playerKmMultiplier = getNumericSetting('player_km_multiplier', 1.0);
     
-    // Revenue calculation
-    const revenuePerKm = company.drive_mode === 'real' ? 1.20 : 0.80;
-    const fuelCostPerKm = 0.30 * truck.fuel_efficiency * (1 - driver.training_eco * 0.01);
-    const wearCostPerKm = 0.05;
-    const profit = kmThisTick * (revenuePerKm - fuelCostPerKm - wearCostPerKm);
+    // Active booster bonus (from shop)
+    const boostPercentage = getActiveBoostPercentage();
+    const boosterMultiplier = 1 + (boostPercentage / 100);
     
-    // Salary cost per minute (monthly salary / 43200 minutes per month)
-    const salaryPerMin = 1500 / 43200;
-    const netProfit = profit - salaryPerMin;
+    // Total km this tick (with booster)
+    const kmThisTick = baseKmPerMin * drivingBonus * enduranceBonus * truckSpeedBonus * randomFactor * playerKmMultiplier * boosterMultiplier;
+    
+    // Revenue calculation - uses admin settings
+    const revenueReal = getNumericSetting('revenue_per_km_real', 1.20);
+    const revenueRace = getNumericSetting('revenue_per_km_race', 0.80);
+    const revenuePerKm = company.drive_mode === 'real' ? revenueReal : revenueRace;
+    const profit = kmThisTick * revenuePerKm;
     
     // Update driver stats AND company km
     if (company.drive_mode === 'real') {
@@ -295,37 +325,23 @@ function simulatePlayerDrivers() {
     // Update truck km
     db.prepare('UPDATE trucks SET total_km = total_km + ? WHERE id = ?').run(kmThisTick, truck.id);
     
-    // Calculate costs
-    const fuelCost = kmThisTick * fuelCostPerKm;
-    const wearCost = kmThisTick * wearCostPerKm;
-    const revenue = kmThisTick * revenuePerKm;
+    // Update company balance (revenus uniquement)
+    db.prepare('UPDATE company SET balance = balance + ? WHERE id = 1').run(profit);
     
-    // Update company balance
-    db.prepare('UPDATE company SET balance = balance + ? WHERE id = 1').run(netProfit);
-    
-    // Log transactions every ~60 ticks (1 hour) to avoid spam
+    // Log revenus toutes les heures
     if (globalTick % 60 === 0) {
-      const hourlyRevenue = revenue * 60;
-      const hourlyFuel = fuelCost * 60;
-      const hourlySalary = salaryPerMin * 60;
-      
+      const hourlyRevenue = profit * 60;
       if (hourlyRevenue > 0) {
         logTransaction('income', 'delivery', `Revenus de ${driver.name}`, hourlyRevenue, driver.id, truck.id);
-      }
-      if (hourlyFuel > 0) {
-        logTransaction('expense', 'fuel', `Carburant - ${driver.name}`, hourlyFuel, driver.id, truck.id);
-      }
-      if (hourlySalary > 0) {
-        logTransaction('expense', 'salary', `Salaire - ${driver.name}`, hourlySalary, driver.id, null);
       }
     }
   }
   
-  // Player incidents (random, ~0.5% chance per tick with drivers)
-  const activeDrivers = db.prepare('SELECT * FROM drivers WHERE is_active = 1').all();
-  if (activeDrivers.length > 0 && Math.random() < 0.005) {
-    handlePlayerIncident(activeDrivers);
-  }
+  // Incidents joueur désactivés pour équilibrage
+  // const activeDrivers = db.prepare('SELECT * FROM drivers WHERE is_active = 1').all();
+  // if (activeDrivers.length > 0 && Math.random() < 0.005) {
+  //   handlePlayerIncident(activeDrivers);
+  // }
 }
 
 // Handle random incidents for player
