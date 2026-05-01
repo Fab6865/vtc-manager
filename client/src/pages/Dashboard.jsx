@@ -84,7 +84,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     loadData()
-    const interval = setInterval(loadData, 30000) // Refresh every 30s
+    const interval = setInterval(loadData, 30000)
     return () => clearInterval(interval)
   }, [])
 
@@ -180,7 +180,7 @@ export default function Dashboard() {
         />
       </div>
 
-      {/* Position */}
+      {/* Position — FIX: total par mode au lieu de total_companies */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="bg-dark-800 rounded-xl p-6 border border-dark-700">
           <div className="flex items-center gap-3">
@@ -190,7 +190,7 @@ export default function Dashboard() {
             <div>
               <p className="text-dark-400 text-sm">Position Réel</p>
               <p className="text-2xl font-bold">
-                {stats.real_ranking}<sup>e</sup> / {stats.total_companies}
+                {stats.real_ranking}<sup>e</sup> / {stats.total_real_companies}
               </p>
             </div>
           </div>
@@ -203,7 +203,7 @@ export default function Dashboard() {
             <div>
               <p className="text-dark-400 text-sm">Position Course</p>
               <p className="text-2xl font-bold">
-                {stats.race_ranking}<sup>e</sup> / {stats.total_companies}
+                {stats.race_ranking}<sup>e</sup> / {stats.total_race_companies}
               </p>
             </div>
           </div>
